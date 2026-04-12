@@ -157,12 +157,10 @@ class TestListProjectsTool:
 
             result = list_projects()
 
-        assert result == {
-            "projects": [
-                {"project": "alpha", "count": 3},
-                {"project": "beta", "count": 7},
-            ]
-        }
+        assert result == [
+            {"project": "alpha", "count": 3},
+            {"project": "beta", "count": 7},
+        ]
 
     def test_empty_returns_empty_list(self) -> None:
         with patch("munin.mcp.server.memory.list_projects", return_value=[]):
@@ -170,7 +168,7 @@ class TestListProjectsTool:
 
             result = list_projects()
 
-        assert result == {"projects": []}
+        assert result == []
 
 
 class TestShowTool:

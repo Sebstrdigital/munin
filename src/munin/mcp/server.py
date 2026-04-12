@@ -105,10 +105,10 @@ def recall(
 
 @mcp.tool()
 @_handle_errors
-def list_projects() -> dict[str, object]:
+def list_projects() -> list[dict[str, object]]:
     """List all projects with thought counts."""
     results = memory.list_projects()
-    return {"projects": [{"project": p, "count": c} for p, c in results]}
+    return [{"project": p, "count": c} for p, c in results]
 
 
 @mcp.tool()
