@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import sys
-from typing import Annotated, Optional
+from typing import Annotated, NoReturn, Optional
 
 import typer
 from rich.console import Console
@@ -19,6 +19,18 @@ from munin.core.memory import remember as _remember
 from munin.core.memory import show as _show
 
 app = typer.Typer(name="munin", help="Local memory store for coding agents.")
+
+
+def _handle_error(e: Exception) -> NoReturn:
+    if isinstance(e, (MuninDBError, MuninEmbedError)):
+        component = "database" if isinstance(e, MuninDBError) else "embed server"
+        typer.echo(
+            f"Error: {component} unreachable: {e}\nHint: run `docker compose up -d`",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    typer.echo(f"Error: {e}", err=True)
+    raise typer.Exit(code=1)
 
 
 def version_callback(value: bool) -> None:
@@ -42,11 +54,12 @@ def main(
 
 @app.command()
 def remember(
-    content: Annotated[Optional[str], typer.Argument(default=None)] = None,
+    content: Annotated[Optional[str], typer.Argument()] = None,
     project: Annotated[Optional[str], typer.Option("--project", "-p")] = None,
     scope: Annotated[Optional[str], typer.Option("--scope", "-s")] = None,
     tag: Annotated[Optional[list[str]], typer.Option("--tag", "-t")] = None,
     metadata: Annotated[Optional[list[str]], typer.Option("--metadata", "-m")] = None,
+    json_output: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """Store a memory in the local store."""
     if content is None:
@@ -71,13 +84,13 @@ def remember(
             tags=list(tag) if tag else None,
             metadata=parsed_metadata if parsed_metadata else None,
         )
+    except Exception as e:
+        _handle_error(e)
+
+    if json_output:
+        print(json.dumps({"id": str(thought_id), "project": project}))
+    else:
         typer.echo(str(thought_id))
-    except (MuninDBError, MuninEmbedError) as e:
-        typer.echo(f"Error: {e} (check that docker services are running)", err=True)
-        raise typer.Exit(code=2)
-    except MuninError as e:
-        typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(code=1)
 
 
 @app.command()
@@ -92,12 +105,8 @@ def recall(
     """Search stored memories by semantic similarity."""
     try:
         results = _recall(query, project=project, scope=scope, limit=limit, threshold=threshold)
-    except (MuninDBError, MuninEmbedError) as e:
-        typer.echo(f"Error: {e} (check that docker services are running)", err=True)
-        raise typer.Exit(code=2)
-    except MuninError as e:
-        typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(code=1)
+    except Exception as e:
+        _handle_error(e)
 
     if json_output:
         print(
@@ -147,9 +156,8 @@ def projects(
     """List all projects with stored memories."""
     try:
         results = _list_projects()
-    except (MuninDBError, MuninEmbedError) as e:
-        typer.echo(f"Error: {e} (check that docker services are running)", err=True)
-        raise typer.Exit(code=2)
+    except Exception as e:
+        _handle_error(e)
 
     if json_output:
         print(json.dumps([{"project": p, "count": c} for p, c in results], indent=2))
@@ -175,16 +183,15 @@ def show(
     except ValueError:
         typer.echo("Error: thought not found", err=True)
         raise typer.Exit(code=1)
-    except (MuninDBError, MuninEmbedError) as e:
-        typer.echo(f"Error: {e} (check that docker services are running)", err=True)
-        raise typer.Exit(code=2)
+    except Exception as e:
+        _handle_error(e)
 
     if thought is None:
         typer.echo("Error: thought not found", err=True)
         raise typer.Exit(code=1)
 
     if json_output:
-        typer.echo(
+        print(
             json.dumps(
                 {
                     "id": str(thought.id),
@@ -223,9 +230,8 @@ def forget(
     except ValueError:
         typer.echo("Error: thought not found", err=True)
         raise typer.Exit(code=1)
-    except (MuninDBError, MuninEmbedError) as e:
-        typer.echo(f"Error: {e} (check that docker services are running)", err=True)
-        raise typer.Exit(code=2)
+    except Exception as e:
+        _handle_error(e)
 
     if not deleted:
         typer.echo("Error: thought not found", err=True)
@@ -253,9 +259,8 @@ def stats(
                 cur.execute("SELECT pg_total_relation_size('thoughts')")
                 size_row = cur.fetchone()
                 db_size = int(size_row[0]) if size_row else 0
-    except MuninDBError as e:
-        typer.echo(f"Error: {e} (check that docker services are running)", err=True)
-        raise typer.Exit(code=2)
+    except Exception as e:
+        _handle_error(e)
 
     cfg = _load_config()
     embed_url = cfg.embed_url

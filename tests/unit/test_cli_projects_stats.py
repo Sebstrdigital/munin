@@ -11,7 +11,7 @@ from typer.testing import CliRunner
 from munin.cli.main import app
 from munin.core.errors import MuninDBError, MuninEmbedError
 
-_RUNNER = CliRunner(mix_stderr=False)
+_RUNNER = CliRunner()
 
 
 # ---------------------------------------------------------------------------
@@ -72,7 +72,7 @@ class TestProjectsErrors:
         with patch("munin.cli.main._list_projects", side_effect=MuninDBError("conn failed")):
             out = _RUNNER.invoke(app, ["projects"])
         assert out.exit_code == 2
-        assert "check that docker services are running" in out.stderr
+        assert "docker compose up -d" in out.stderr
 
     def test_embed_error_exits_2(self) -> None:
         with patch("munin.cli.main._list_projects", side_effect=MuninEmbedError("no embed")):
@@ -176,7 +176,7 @@ class TestStatsErrors:
         with patch("munin.cli.main._list_projects", side_effect=MuninDBError("conn failed")):
             out = _RUNNER.invoke(app, ["stats"])
         assert out.exit_code == 2
-        assert "check that docker services are running" in out.stderr
+        assert "docker compose up -d" in out.stderr
 
     def test_db_error_no_traceback(self) -> None:
         with patch("munin.cli.main._list_projects", side_effect=MuninDBError("bad")):

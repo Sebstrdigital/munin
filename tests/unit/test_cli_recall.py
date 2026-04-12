@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 from munin.cli.main import app
 from munin.core.memory import ThoughtResult
 
-_RUNNER = CliRunner(mix_stderr=False)
+_RUNNER = CliRunner()
 
 _ID1 = uuid.UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 _ID2 = uuid.UUID("bbbbbbbb-cccc-dddd-eeee-ffffffffffff")
@@ -130,7 +130,7 @@ class TestRecallErrors:
         with patch("munin.cli.main._recall", side_effect=MuninDBError("conn failed")):
             out = _RUNNER.invoke(app, ["recall", "query"])
         assert out.exit_code == 2
-        assert "check that docker services are running" in out.stderr
+        assert "docker compose up -d" in out.stderr
 
     def test_validation_error_exits_1(self) -> None:
         from munin.core.errors import MuninError

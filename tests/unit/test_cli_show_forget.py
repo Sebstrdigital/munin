@@ -13,7 +13,7 @@ from typer.testing import CliRunner
 from munin.cli.main import app
 from munin.core.memory import Thought
 
-_RUNNER = CliRunner(mix_stderr=False)
+_RUNNER = CliRunner()
 
 _ID = uuid.UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 _TS_CREATED = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
@@ -119,7 +119,7 @@ class TestShowErrors:
         with patch("munin.cli.main._show", side_effect=MuninDBError("conn failed")):
             out = _RUNNER.invoke(app, ["show", str(_ID)])
         assert out.exit_code == 2
-        assert "check that docker services are running" in out.stderr
+        assert "docker compose up -d" in out.stderr
 
 
 class TestForgetCommand:
@@ -165,7 +165,7 @@ class TestForgetCommand:
         with patch("munin.cli.main._forget", side_effect=MuninDBError("conn failed")):
             out = _RUNNER.invoke(app, ["forget", str(_ID), "--yes"])
         assert out.exit_code == 2
-        assert "check that docker services are running" in out.stderr
+        assert "docker compose up -d" in out.stderr
 
 
 class TestShowAfterForget:
