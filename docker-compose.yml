@@ -1,0 +1,39 @@
+services:
+  postgres:
+    image: pgvector/pgvector:pg16
+    container_name: munin-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: munin
+      POSTGRES_PASSWORD: munin
+      POSTGRES_DB: munin
+    ports:
+      - "5433:5432"
+    volumes:
+      - ./pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U munin -d munin"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  llama-embed:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    container_name: munin-llama-embed
+    restart: unless-stopped
+    command: >
+      --model /models/nomic-embed-text-v1.5.Q4_K_M.gguf
+      --embedding
+      --pooling mean
+      --host 0.0.0.0
+      --port 8080
+      --ctx-size 2048
+    ports:
+      - "8088:8080"
+    volumes:
+      - ./models:/models:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
