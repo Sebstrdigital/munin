@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -11,7 +12,7 @@ from munin.core.db import _pools, get_pool
 
 
 @pytest.fixture(autouse=True)
-def clear_pool_cache() -> None:
+def clear_pool_cache() -> Iterator[None]:
     """Ensure pool cache is clean before and after each test."""
     _pools.clear()
     yield

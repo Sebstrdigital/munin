@@ -94,8 +94,6 @@ def recall(
     return results
 
 
-
-
 @dataclass
 class Thought:
     """Full thought row — no similarity score. Returned by show()."""

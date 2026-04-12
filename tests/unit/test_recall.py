@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import uuid
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -20,7 +21,7 @@ from munin.core.config import MuninConfig
 
 
 @pytest.fixture(autouse=True)
-def clear_scope_cache() -> None:  # type: ignore[return]
+def clear_scope_cache() -> Iterator[None]:
     """Clear the lru_cache between tests so scope detection is not stale."""
     _scope._find_project.cache_clear()
     yield
@@ -48,7 +49,6 @@ def _make_row(
     metadata: dict[str, Any] | None = None,
     similarity: float = 0.9,
     created_at: datetime | None = None,
-    updated_at: datetime | None = None,
 ) -> tuple[Any, ...]:
     return (
         row_id or uuid.uuid4(),
@@ -59,7 +59,6 @@ def _make_row(
         metadata or {},
         similarity,
         created_at or datetime(2024, 1, 1, tzinfo=timezone.utc),
-        updated_at or datetime(2024, 1, 1, tzinfo=timezone.utc),
     )
 
 

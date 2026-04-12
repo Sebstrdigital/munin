@@ -46,10 +46,12 @@ def cfg() -> MuninConfig:
 
 
 @pytest.fixture(scope="session", autouse=True)
-def open_pool(cfg: MuninConfig) -> None:
+def open_pool(cfg: MuninConfig) -> Generator[None, None, None]:
     """Open the connection pool once for the entire test session."""
     pool = get_pool(cfg)
     pool.open(wait=True)
+    yield
+    pool.close()
 
 
 @pytest.fixture(autouse=True)
