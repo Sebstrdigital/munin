@@ -2,7 +2,11 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import os
 import sys
+from collections.abc import Callable
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 from typing import Annotated, NoReturn, Optional
 
 import typer
@@ -13,6 +17,7 @@ from munin.core.config import load as _load_config
 from munin.core.db import get_pool as _get_pool
 from munin.core.embed import embed as _embed
 from munin.core.errors import MuninDBError, MuninEmbedError, MuninError
+from munin.core.logging import setup_logging as _setup_logging
 from munin.core.memory import forget as _forget
 from munin.core.memory import list_projects as _list_projects
 from munin.core.memory import recall as _recall
@@ -21,6 +26,9 @@ from munin.core.memory import show as _show
 from munin.core.scope import current_project as _current_project
 
 app = typer.Typer(name="munin", help="Local memory store for coding agents.")
+
+completion_app = typer.Typer(name="completion", help="Manage shell completion scripts.")
+app.add_typer(completion_app)
 
 
 def _handle_error(e: Exception) -> NoReturn:
@@ -50,8 +58,9 @@ def main(
         is_eager=True,
         help="Print version and exit.",
     ),
+    verbose: bool = typer.Option(False, "--verbose", "-v", help="Enable DEBUG-level file logging."),
 ) -> None:
-    pass
+    _setup_logging(verbose=verbose)
 
 
 @app.command()
@@ -246,6 +255,89 @@ def forget(
     typer.echo(f"Deleted {thought_id}")
 
 
+@app.command(name="import")
+def import_cmd(
+    path: Annotated[Path, typer.Argument(help="Path to .jsonl file or markdown folder")],
+    format: Annotated[Optional[str], typer.Option("--format", "-f", help="Force format: jsonl or markdown")] = None,
+    json_output: Annotated[bool, typer.Option("--json")] = False,
+) -> None:
+    """Import memories from a .jsonl file or markdown folder."""
+    # Determine format
+    fmt = format
+    if fmt is None:
+        if path.is_dir():
+            fmt = "markdown"
+        elif path.suffix == ".jsonl":
+            fmt = "jsonl"
+        else:
+            typer.echo("Error: cannot detect format; use --format jsonl or --format markdown", err=True)
+            raise typer.Exit(code=1)
+
+    if fmt == "markdown":
+        typer.echo("Markdown import not implemented yet")
+        raise typer.Exit(1)
+
+    if fmt != "jsonl":
+        typer.echo(f"Error: unknown format '{fmt}'; use jsonl or markdown", err=True)
+        raise typer.Exit(code=1)
+
+    if not path.exists():
+        typer.echo(f"Error: file not found: {path}", err=True)
+        raise typer.Exit(code=1)
+
+    imported = 0
+    skipped = 0
+    failed = 0
+
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except Exception as e:
+        _handle_error(e)
+
+    for line in lines:
+        if not line.strip():
+            continue
+
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            typer.echo(f"Warning: skipping invalid JSON line: {line[:80]}", err=True)
+            skipped += 1
+            continue
+
+        content = row.get("content")
+        if not content:
+            typer.echo("Warning: skipping row missing 'content' field", err=True)
+            skipped += 1
+            continue
+
+        proj = row.get("project") or _current_project()
+        scope = row.get("scope")
+        tags = row.get("tags")
+        metadata = row.get("metadata")
+
+        try:
+            _remember(
+                content,
+                project=proj,
+                scope=scope,
+                tags=list(tags) if tags else None,
+                metadata=metadata if isinstance(metadata, dict) else None,
+            )
+            imported += 1
+        except Exception as e:
+            typer.echo(f"Warning: failed to store row: {e}", err=True)
+            failed += 1
+
+    if json_output:
+        print(json.dumps({"imported": imported, "skipped": skipped, "failed": failed}))
+    else:
+        typer.echo(f"Imported: {imported} | Skipped: {skipped} | Failed: {failed}")
+
+    if imported == 0:
+        raise typer.Exit(code=1)
+
+
 @app.command()
 def stats(
     json_output: Annotated[bool, typer.Option("--json", help="Output as JSON object.")] = False,
@@ -297,3 +389,188 @@ def stats(
     typer.echo(f"DB size:         {db_size:,} bytes")
     typer.echo(f"Embed URL:       {embed_url}")
     typer.echo(f"Embed reachable: {'yes' if embed_reachable else 'no'}")
+
+
+@completion_app.command()
+def install(
+    shell: Annotated[str, typer.Option("--shell", help="Shell: bash, zsh, or fish.")] = "zsh",
+) -> None:
+    """Install shell completion for munin.
+
+    Writes a completion script to the standard shell completion directory and
+    prints activation instructions.
+
+    \b
+    bash  -> ~/.bash_completion.d/munin.bash
+             Activate: source the file from ~/.bashrc
+    zsh   -> ~/.zsh/completions/_munin
+             Activate: add fpath+=~/.zsh/completions before compinit in ~/.zshrc
+    fish  -> ~/.config/fish/completions/munin.fish
+             Auto-loaded on next session (no manual step needed)
+    """
+    from click.shell_completion import get_completion_class
+    from typer.main import get_command as _get_click_command
+
+    valid_shells = {"bash", "zsh", "fish"}
+    if shell not in valid_shells:
+        typer.echo(
+            f"Error: unsupported shell '{shell}'. Supported: bash, zsh, fish",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    home = Path.home()
+    if shell == "bash":
+        script_path = home / ".bash_completion.d" / "munin.bash"
+        activation = f"Add to ~/.bashrc:\n  source {script_path}"
+    elif shell == "zsh":
+        script_path = home / ".zsh" / "completions" / "_munin"
+        activation = (
+            "Add to ~/.zshrc before compinit:\n"
+            "  fpath+=~/.zsh/completions\n"
+            "  autoload -Uz compinit && compinit"
+        )
+    else:
+        script_path = home / ".config" / "fish" / "completions" / "munin.fish"
+        activation = "Fish auto-loads completions. Open a new terminal to activate."
+
+    comp_class = get_completion_class(shell)
+    if comp_class is None:
+        typer.echo(f"Error: no completion backend for '{shell}'.", err=True)
+        raise typer.Exit(code=1)
+    click_cmd = _get_click_command(app)
+    comp = comp_class(
+        cli=click_cmd,
+        ctx_args={},
+        prog_name="munin",
+        complete_var="_MUNIN_COMPLETE",
+    )
+    script = comp.source()
+
+    script_path.parent.mkdir(parents=True, exist_ok=True)
+    script_path.write_text(script, encoding="utf-8")
+
+    typer.echo(f"Written: {script_path}")
+    typer.echo(activation)
+
+
+@app.command()
+def doctor(
+    json_output: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
+) -> None:
+    """Run self-diagnosis checks on the munin stack."""
+    _TIMEOUT = 2.0
+
+    def _run(fn: Callable[[], None], hint: str) -> tuple[bool, str]:
+        executor = ThreadPoolExecutor(max_workers=1)
+        future = executor.submit(fn)
+        executor.shutdown(wait=False)
+        try:
+            future.result(timeout=_TIMEOUT)
+            return True, ""
+        except TimeoutError:
+            return False, hint
+        except Exception:
+            return False, hint
+
+    def _check_config_loaded() -> None:
+        _load_config()
+
+    def _check_db_reachable() -> None:
+        cfg = _load_config()
+        pool = _get_pool(cfg)
+        if pool.closed:
+            pool.open(wait=True)
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute("SELECT 1")
+
+    def _check_schema_present() -> None:
+        cfg = _load_config()
+        pool = _get_pool(cfg)
+        if pool.closed:
+            pool.open(wait=True)
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT 1 FROM information_schema.tables WHERE table_name = 'thoughts'"
+                )
+                if cur.fetchone() is None:
+                    raise RuntimeError("thoughts table not found")
+
+    def _check_functions_present() -> None:
+        cfg = _load_config()
+        pool = _get_pool(cfg)
+        if pool.closed:
+            pool.open(wait=True)
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT proname FROM pg_proc WHERE proname IN ('match_thoughts', 'upsert_thought')"
+                )
+                found = {row[0] for row in cur.fetchall()}
+                missing = {"match_thoughts", "upsert_thought"} - found
+                if missing:
+                    raise RuntimeError(f"Missing functions: {missing}")
+
+    def _check_embed_reachable() -> None:
+        _embed("ping")
+
+    def _check_embed_dim_matches() -> None:
+        cfg = _load_config()
+        vec = _embed("test")
+        if len(vec) != cfg.embed_dim:
+            raise RuntimeError(f"dim {len(vec)} != config {cfg.embed_dim}")
+
+    def _check_log_dir_writable() -> None:
+        log_dir = Path.home() / ".local" / "state" / "munin"
+        log_dir.mkdir(parents=True, exist_ok=True)
+        test_file = log_dir / ".munin_doctor_test"
+        test_file.write_text("ok")
+        test_file.unlink()
+
+    _checks: list[tuple[str, Callable[[], None], str]] = [
+        ("config_loaded", _check_config_loaded, "check ~/.config/munin/config.toml"),
+        ("db_reachable", _check_db_reachable, "run `docker compose up -d`"),
+        ("schema_present", _check_schema_present, "apply `sql/*.sql`"),
+        (
+            "functions_present",
+            _check_functions_present,
+            "apply `sql/003_match_thoughts.sql` and `sql/004_upsert_thought.sql`",
+        ),
+        ("embed_reachable", _check_embed_reachable, "run `docker compose up -d`"),
+        ("embed_dim_matches", _check_embed_dim_matches, "embed dim mismatch — check config"),
+        (
+            "log_dir_writable",
+            _check_log_dir_writable,
+            "check permissions on ~/.local/state/munin/",
+        ),
+    ]
+
+    results: list[tuple[str, bool, str]] = []
+    for name, fn, hint in _checks:
+        passed, err_hint = _run(fn, hint)
+        results.append((name, passed, err_hint))
+
+    all_passed = all(passed for _, passed, _ in results)
+
+    if json_output:
+        print(
+            json.dumps(
+                {
+                    "checks": [{"name": name, "passed": passed} for name, passed, _ in results],
+                    "all_passed": all_passed,
+                },
+                indent=2,
+            )
+        )
+    else:
+        no_color = bool(os.environ.get("NO_COLOR"))
+        console = Console(no_color=no_color)
+        for name, passed, err_hint in results:
+            if passed:
+                console.print(f"[green]\u2713[/green] {name}")
+            else:
+                console.print(f"[red]\u2717[/red] {name} \u2014 {err_hint}")
+
+    raise typer.Exit(code=0 if all_passed else 1)
