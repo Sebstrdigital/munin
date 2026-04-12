@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from typing import cast
 
 import httpx
 
@@ -67,7 +68,7 @@ def embed(text: str, *, config: MuninConfig | None = None) -> list[float]:
         )
 
     data: list[dict[str, object]] = resp.json()["data"]
-    return [float(v) for v in data[0]["embedding"]]  # type: ignore[arg-type]
+    return [float(v) for v in cast(list[float], data[0]["embedding"])]
 
 
 def embed_batch(
@@ -110,8 +111,8 @@ def embed_batch(
 
             data: list[dict[str, object]] = resp.json()["data"]
             # llama.cpp returns results sorted by index; preserve that ordering
-            ordered = sorted(data, key=lambda d: int(d["index"]))  # type: ignore[arg-type]
+            ordered = sorted(data, key=lambda d: cast(int, d["index"]))
             for item in ordered:
-                results.append([float(v) for v in item["embedding"]])  # type: ignore[arg-type]
+                results.append([float(v) for v in cast(list[float], item["embedding"])])
 
     return results
