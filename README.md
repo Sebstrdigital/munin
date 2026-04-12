@@ -8,10 +8,10 @@ Munin is a local, language-agnostic memory system that lets you store and retrie
 
 ## Quickstart
 
-### 1. Clone the repository
+### 1. Enter the project directory
 
 ```bash
-git clone https://github.com/yourusername/munin.git && cd munin
+cd munin
 ```
 
 ### 2. Download the embedding model

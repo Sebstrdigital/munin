@@ -15,8 +15,6 @@ import typer
 from rich.console import Console
 from rich.table import Table
 
-logger = logging.getLogger(__name__)
-
 from munin.core.config import load as _load_config
 from munin.core.db import get_pool as _get_pool
 from munin.core.embed import embed as _embed
@@ -28,6 +26,8 @@ from munin.core.memory import recall as _recall
 from munin.core.memory import remember as _remember
 from munin.core.memory import show as _show
 from munin.core.scope import current_project as _current_project
+
+logger = logging.getLogger(__name__)
 
 app = typer.Typer(name="munin", help="Local memory store for coding agents.")
 
@@ -298,12 +298,11 @@ def _import_markdown(folder: Path, json_output: bool) -> None:
 @app.command(name="import")
 def import_cmd(
     path: Annotated[Path, typer.Argument(help="Path to .jsonl file or markdown folder")],
-    format: Annotated[Optional[str], typer.Option("--format", "-f", help="Force format: jsonl or markdown")] = None,
+    fmt: Annotated[Optional[str], typer.Option("--format", "-f", help="Force format: jsonl or markdown")] = None,
     json_output: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
     """Import memories from a .jsonl file or markdown folder."""
     # Determine format
-    fmt = format
     if fmt is None:
         if path.is_dir():
             fmt = "markdown"
@@ -498,18 +497,6 @@ def doctor(
     """Run self-diagnosis checks on the munin stack."""
     _TIMEOUT = 2.0
 
-    def _run(fn: Callable[[], None], hint: str) -> tuple[bool, str]:
-        executor = ThreadPoolExecutor(max_workers=1)
-        future = executor.submit(fn)
-        executor.shutdown(wait=False)
-        try:
-            future.result(timeout=_TIMEOUT)
-            return True, ""
-        except TimeoutError:
-            return False, hint
-        except Exception:
-            return False, hint
-
     def _check_config_loaded() -> None:
         _load_config()
 
@@ -585,9 +572,14 @@ def doctor(
     ]
 
     results: list[tuple[str, bool, str]] = []
-    for name, fn, hint in _checks:
-        passed, err_hint = _run(fn, hint)
-        results.append((name, passed, err_hint))
+    with ThreadPoolExecutor(max_workers=len(_checks)) as executor:
+        futures = {executor.submit(fn): (name, hint) for name, fn, hint in _checks}
+        for future, (name, hint) in futures.items():
+            try:
+                future.result(timeout=_TIMEOUT)
+                results.append((name, True, ""))
+            except (TimeoutError, Exception):
+                results.append((name, False, hint))
 
     all_passed = all(passed for _, passed, _ in results)
 
