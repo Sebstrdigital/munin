@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import importlib.metadata
 import json
 import sys
 from typing import Annotated, NoReturn, Optional
@@ -17,6 +18,7 @@ from munin.core.memory import list_projects as _list_projects
 from munin.core.memory import recall as _recall
 from munin.core.memory import remember as _remember
 from munin.core.memory import show as _show
+from munin.core.scope import current_project as _current_project
 
 app = typer.Typer(name="munin", help="Local memory store for coding agents.")
 
@@ -35,7 +37,7 @@ def _handle_error(e: Exception) -> NoReturn:
 
 def version_callback(value: bool) -> None:
     if value:
-        typer.echo("munin 0.1.0")
+        typer.echo(f"munin {importlib.metadata.version('munin')}")
         raise typer.Exit()
 
 
@@ -74,12 +76,16 @@ def remember(
     if metadata:
         for item in metadata:
             key, _, value = item.partition("=")
+            if not key:
+                raise typer.BadParameter(f"Invalid metadata format: '{item}'. Expected KEY=VALUE")
             parsed_metadata[key] = value
+
+    resolved_project = project or _current_project()
 
     try:
         thought_id = _remember(
             content,
-            project=project,
+            project=resolved_project,
             scope=scope,
             tags=list(tag) if tag else None,
             metadata=parsed_metadata if parsed_metadata else None,
@@ -88,7 +94,7 @@ def remember(
         _handle_error(e)
 
     if json_output:
-        print(json.dumps({"id": str(thought_id), "project": project}))
+        print(json.dumps({"id": str(thought_id), "project": resolved_project}))
     else:
         typer.echo(str(thought_id))
 
