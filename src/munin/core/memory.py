@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -13,6 +14,8 @@ from munin.core.config import MuninConfig, load
 from munin.core.db import get_pool
 from munin.core.embed import embed
 from munin.core.errors import MuninError
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -63,6 +66,7 @@ def recall(
         )
 
     match_limit = limit if limit is not None else cfg.default_limit
+    logger.debug("recall: project=%s query_len=%d limit=%d", resolved_project, len(query), match_limit)
     vec = embed(query, config=cfg)
     vec_str = "[" + ",".join(map(repr, vec)) + "]"
 
@@ -193,6 +197,7 @@ def remember(
     resolved_tags: list[str] = tags if tags is not None else []
     resolved_metadata: dict[str, Any] = metadata if metadata is not None else {}
 
+    logger.info("remember: project=%s content_len=%d", resolved_project, len(content))
     vec = embed(content, config=cfg)
     embedding_str = "[" + ",".join(map(repr, vec)) + "]"
 

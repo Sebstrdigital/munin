@@ -15,7 +15,10 @@ from munin.core.config import load as _load_config
 from munin.core.db import get_pool as _get_pool
 from munin.core.embed import embed as _embed
 from munin.core.errors import MuninDBError, MuninEmbedError, MuninError
+from munin.core.logging import setup_logging as _setup_logging
 from munin.core.scope import current_project
+
+_setup_logging()
 
 mcp: FastMCP = FastMCP("munin", instructions="Local memory store for coding agents")
 
