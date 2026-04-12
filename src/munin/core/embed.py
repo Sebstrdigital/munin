@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from typing import cast
 
@@ -9,6 +10,8 @@ import httpx
 
 from munin.core.config import MuninConfig, load
 from munin.core.errors import MuninEmbedError
+
+logger = logging.getLogger(__name__)
 
 _TIMEOUT = 30.0
 _RETRY_WAITS = (0.5, 1.0)
@@ -59,6 +62,7 @@ def embed(text: str, *, config: MuninConfig | None = None) -> list[float]:
     cfg = config if config is not None else load()
     url = f"{cfg.embed_url}/v1/embeddings"
 
+    logger.debug("embed: url=%s text_len=%d", url, len(text))
     with httpx.Client() as client:
         resp = _post_embeddings(client, url, {"input": text})
 
