@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -162,6 +163,68 @@ def show(
         created_at=row[6],
         updated_at=row[7],
     )
+
+
+def remember(
+    content: str,
+    *,
+    project: str | None = None,
+    scope: str | None = None,
+    tags: list[str] | None = None,
+    metadata: dict[str, Any] | None = None,
+    config: MuninConfig | None = None,
+) -> UUID:
+    """Store a thought, auto-detecting the current git project if needed.
+
+    Args:
+        content: The thought content to store.
+        project: Project name. Resolved from git root if not provided.
+        scope: Optional scope label.
+        tags: Optional list of string tags. Defaults to [].
+        metadata: Optional JSON-serialisable metadata dict. Defaults to {}.
+        config: Optional config override; uses load() if not provided.
+
+    Returns:
+        UUID of the inserted (or upserted) thought row.
+
+    Raises:
+        MuninError: If project cannot be determined.
+    """
+    cfg = config if config is not None else load()
+
+    resolved_project = project or _scope.current_project()
+    if resolved_project is None:
+        raise MuninError(
+            "project could not be determined; pass project= or run from inside a git repo"
+        )
+
+    resolved_tags: list[str] = tags if tags is not None else []
+    resolved_metadata: dict[str, Any] = metadata if metadata is not None else {}
+
+    vec = embed(content, config=cfg)
+    embedding_str = "[" + ",".join(map(repr, vec)) + "]"
+
+    pool = get_pool(cfg)
+    pool.open(wait=True)
+
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT upsert_thought(%s, %s::vector, %s, %s, %s, %s::jsonb)",
+                (
+                    content,
+                    embedding_str,
+                    resolved_project,
+                    scope,
+                    resolved_tags,
+                    json.dumps(resolved_metadata),
+                ),
+            )
+            row = cur.fetchone()
+
+    if row is None:
+        raise MuninError("upsert_thought returned no row")
+    return UUID(str(row[0]))
 
 
 def forget(
