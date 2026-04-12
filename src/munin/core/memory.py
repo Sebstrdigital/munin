@@ -74,7 +74,7 @@ def recall(
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT id, content, project, scope, tags, metadata,"
-                " similarity, created_at, updated_at"
+                " similarity, created_at"
                 " FROM match_thoughts(%s::vector, %s, %s, %s, %s)",
                 (vec_str, resolved_project, scope, match_limit, threshold),
             )
@@ -94,13 +94,6 @@ def recall(
     return results
 
 
-# ============================================================
-# US-010 SECTION: Thought dataclass + list_projects / show / forget
-# ============================================================
-
-_SELECT_COLS = (
-    "id, content, project, scope, tags, metadata, created_at, updated_at"
-)
 
 
 @dataclass
@@ -147,7 +140,8 @@ def show(
     with pool.connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                f"SELECT {_SELECT_COLS} FROM thoughts WHERE id = %s",
+                "SELECT id, content, project, scope, tags, metadata, created_at, updated_at"
+                " FROM thoughts WHERE id = %s",
                 (uid,),
             )
             row: Any = cur.fetchone()

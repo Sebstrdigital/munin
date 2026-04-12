@@ -54,7 +54,8 @@ def test_embed_returns_768_floats(monkeypatch: pytest.MonkeyPatch) -> None:
         return _embedding_response([vec])
 
     transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(httpx, "Client", lambda: httpx.Client(transport=transport))
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(transport=transport, **kw))
 
     result = embed("hello", config=_make_cfg())
     assert len(result) == _DIM
@@ -69,7 +70,8 @@ def test_embed_values_match(monkeypatch: pytest.MonkeyPatch) -> None:
         return _embedding_response([vec])
 
     transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(httpx, "Client", lambda: httpx.Client(transport=transport))
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(transport=transport, **kw))
 
     result = embed("test", config=_make_cfg())
     assert result == pytest.approx(vec)
@@ -82,7 +84,8 @@ def test_embed_raises_on_connect_error(monkeypatch: pytest.MonkeyPatch) -> None:
         raise httpx.ConnectError("refused")
 
     transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(httpx, "Client", lambda: httpx.Client(transport=transport))
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(transport=transport, **kw))
 
     with pytest.raises(MuninEmbedError, match="embed server unreachable"):
         embed("hello", config=_make_cfg())
@@ -97,7 +100,8 @@ def test_embed_raises_on_5xx_after_retries(monkeypatch: pytest.MonkeyPatch) -> N
         return httpx.Response(503, text='{"error": "overloaded"}')
 
     transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(httpx, "Client", lambda: httpx.Client(transport=transport))
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(transport=transport, **kw))
 
     with pytest.raises(MuninEmbedError, match="embed server unreachable"):
         embed("hello", config=_make_cfg())
@@ -119,7 +123,8 @@ def test_embed_batch_returns_correct_count(monkeypatch: pytest.MonkeyPatch) -> N
         return _embedding_response(vecs[:n])
 
     transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(httpx, "Client", lambda: httpx.Client(transport=transport))
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(transport=transport, **kw))
 
     result = embed_batch(texts, config=_make_cfg())
     assert len(result) == 3
@@ -139,7 +144,8 @@ def test_embed_batch_respects_batch_size(monkeypatch: pytest.MonkeyPatch) -> Non
         return _embedding_response([_single_vec() for _ in range(n)])
 
     transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(httpx, "Client", lambda: httpx.Client(transport=transport))
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(transport=transport, **kw))
 
     # batch_size=2 → calls of size 2, 2, 1
     result = embed_batch(texts, config=_make_cfg(batch_size=2))
@@ -166,7 +172,8 @@ def test_embed_batch_preserves_order(monkeypatch: pytest.MonkeyPatch) -> None:
         return httpx.Response(200, text=body_out)
 
     transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(httpx, "Client", lambda: httpx.Client(transport=transport))
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(transport=transport, **kw))
 
     result = embed_batch(texts, config=_make_cfg(batch_size=3))
     for i, vec in enumerate(result):
@@ -183,7 +190,8 @@ def test_embed_batch_empty_input(monkeypatch: pytest.MonkeyPatch) -> None:
         return httpx.Response(200, text="{}")
 
     transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(httpx, "Client", lambda: httpx.Client(transport=transport))
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(transport=transport, **kw))
 
     result = embed_batch([], config=_make_cfg())
     assert result == []
@@ -197,7 +205,8 @@ def test_embed_batch_raises_on_connect_error(monkeypatch: pytest.MonkeyPatch) ->
         raise httpx.ConnectError("refused")
 
     transport = httpx.MockTransport(handler)
-    monkeypatch.setattr(httpx, "Client", lambda: httpx.Client(transport=transport))
+    real_client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: real_client(transport=transport, **kw))
 
     with pytest.raises(MuninEmbedError, match="embed server unreachable"):
         embed_batch(["hello"], config=_make_cfg())

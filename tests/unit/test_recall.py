@@ -99,17 +99,21 @@ class TestCurrentProject:
         (tmp_path / ".git").mkdir()
         assert _scope.current_project(cwd=tmp_path) == tmp_path.name
 
-    def test_returns_none_when_no_git(self, tmp_path: Path) -> None:
-        # tmp_path has no .git and is not inside the test repo's root
-        # We need a truly isolated directory — use a nested tmp subdir
-        isolated = tmp_path / "no_git_here"
-        isolated.mkdir()
-        result = _scope._find_project(isolated.resolve())
-        # Might still find a parent .git if tmp_path happens to be inside one;
-        # assert based on actual traversal outcome without assuming None
-        # The important thing is the function doesn't crash.
-        # For a truly isolated check, only assert None when we can guarantee it.
-        assert result is None or isinstance(result, str)
+    def test_returns_none_when_no_git(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        tmp_path: Path,
+        cfg: MuninConfig,
+    ) -> None:
+        from munin.core.errors import MuninError
+        from munin.core.memory import recall
+
+        monkeypatch.chdir(tmp_path)  # isolated dir guaranteed to have no .git ancestor
+        monkeypatch.setattr("munin.core.memory.embed", lambda *a, **kw: [0.5] * 768)
+        _mock_pool_with_rows(monkeypatch, [])
+
+        with pytest.raises(MuninError, match="project could not be determined"):
+            recall("test query", config=cfg)
 
     def test_caches_by_resolved_dir(self, tmp_path: Path) -> None:
         repo = tmp_path / "cached_repo"
