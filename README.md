@@ -1,20 +1,115 @@
 # munin
 
-Local, multi-tool AI memory system for per-project context. Named after Odin's raven of memory.
+Local memory store for coding agents.
 
-> Status: planning. See [docs/decisions.md](docs/decisions.md) and [docs/plan.md](docs/plan.md).
+## What it does
 
-## What
+Munin is a local, language-agnostic memory system that lets you store and retrieve project context using semantic search. Named after Odin's raven of memory, it provides a Postgres + pgvector backend with an OpenAI-compatible embedding server, exposed via a CLI and MCP server. Automatically scope memories by Git project and recall context across projects when needed.
 
-One local Postgres + pgvector store, accessible from any AI tool (Claude Code, Cursor, ChatGPT desktop, Codex, shell) via MCP or CLI. Per-project scoping with cross-project recall when asked.
+## Quickstart
 
-## Stack
+### 1. Clone the repository
 
-- Postgres 16 + pgvector (Docker)
-- llama.cpp server + `nomic-embed-text-v1.5` GGUF (Docker, OpenAI-compatible API)
-- Python core module shared by CLI (`typer`) and MCP server (FastMCP)
-- One `docker compose up` to start the backend
+```bash
+git clone https://github.com/yourusername/munin.git && cd munin
+```
 
-## Not yet built
+### 2. Download the embedding model
 
-Everything. See `docs/plan.md` for milestones.
+```bash
+mkdir -p models
+curl -L -o models/nomic-embed-text-v1.5.Q4_K_M.gguf \
+  https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf
+```
+
+### 3. Start the Docker services
+
+```bash
+docker compose up -d
+```
+
+Wait for both services to report as healthy:
+
+```bash
+docker compose ps
+```
+
+### 4. Apply database migrations
+
+```bash
+for f in sql/*.sql; do cat "$f" | docker exec -i munin-postgres psql -U munin -d munin; done
+```
+
+### 5. Install the CLI
+
+```bash
+pipx install -e .
+```
+
+### 6. Verify the installation
+
+```bash
+munin doctor
+```
+
+### 7. Try the core commands
+
+Store a memory:
+
+```bash
+munin remember "First thought from the quickstart"
+```
+
+Retrieve it:
+
+```bash
+munin recall "quickstart"
+```
+
+### 8. (Optional) Add to Claude Code
+
+To use munin with Claude Code, add this to your `~/.claude/.mcp.json`:
+
+```json
+{
+  "mcpServers": {
+    "munin": {
+      "command": "munin-mcp"
+    }
+  }
+}
+```
+
+## Commands
+
+| Command | Purpose |
+|---------|---------|
+| `munin remember <text>` | Store a memory with optional tags and scope |
+| `munin recall <query>` | Semantic search over stored memories |
+| `munin show [id]` | Display a specific memory or list all |
+| `munin forget [id]` | Delete a memory |
+| `munin projects` | List all projects in the memory store |
+| `munin stats` | Show memory usage statistics |
+| `munin import <file>` | Bulk import memories from JSONL |
+| `munin doctor` | Self-diagnosis and health check |
+| `munin completion` | Generate shell completions (bash, zsh, fish) |
+
+## Architecture
+
+```
+cli/ ─┐
+      ├─> core/ ─> postgres (pgvector)
+mcp/ ─┘          └> llama.cpp embed
+```
+
+The `core/` module is the single source of truth. The CLI and MCP server are thin wrappers around core functions. The database remains "dumb" — embeddings are computed client-side and passed as vectors. All memories are stored in a single `thoughts` table with metadata filters for project, scope, and tags.
+
+## Further reading
+
+- [Design Decisions](docs/decisions.md) — rationale and architecture choices
+- [Release Plan](docs/plan.md) — milestones M0–M5
+- [Epic Documentation](tasks/epic-munin-v1.md) — user stories and acceptance criteria
+
+## Status
+
+Munin is in active development. See the [release plan](docs/plan.md) for upcoming features and milestones.
