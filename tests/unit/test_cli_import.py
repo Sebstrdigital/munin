@@ -125,12 +125,12 @@ class TestImportJsonl:
         assert kw["tags"] == ["a", "b"]
         assert kw["metadata"] == {"k": "v"}
 
-    def test_markdown_stub_exits_1(self, tmp_path: Path) -> None:
+    def test_markdown_empty_folder_exits_1(self, tmp_path: Path) -> None:
         d = tmp_path / "notes"
         d.mkdir()
-        out = _RUNNER.invoke(app, ["import", str(d)])
+        with patch("munin.cli.main._remember", return_value=_ID):
+            out = _RUNNER.invoke(app, ["import", str(d)])
         assert out.exit_code == 1
-        assert "not implemented" in out.output
 
     def test_file_not_found_exits_nonzero(self, tmp_path: Path) -> None:
         out = _RUNNER.invoke(app, ["import", str(tmp_path / "missing.jsonl")])

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import json
+import logging
 import os
 import sys
 from collections.abc import Callable
@@ -9,9 +10,12 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Annotated, NoReturn, Optional
 
+import frontmatter
 import typer
 from rich.console import Console
 from rich.table import Table
+
+logger = logging.getLogger(__name__)
 
 from munin.core.config import load as _load_config
 from munin.core.db import get_pool as _get_pool
@@ -255,6 +259,42 @@ def forget(
     typer.echo(f"Deleted {thought_id}")
 
 
+def _print_import_summary(imported: int, skipped: int, failed: int, json_output: bool) -> None:
+    if json_output:
+        print(json.dumps({"imported": imported, "skipped": skipped, "failed": failed}))
+    else:
+        typer.echo(f"Imported: {imported} | Skipped: {skipped} | Failed: {failed}")
+
+
+def _import_markdown(folder: Path, json_output: bool) -> None:
+    imported = skipped = failed = 0
+    for md_file in sorted(folder.glob("*.md")):
+        try:
+            post = frontmatter.load(str(md_file))
+            content = post.content.strip()
+            if not content:
+                skipped += 1
+                continue
+            project = post.get("project") or _current_project()
+            scope = post.get("scope")
+            tags = post.get("tags", [])
+            metadata = post.get("metadata", {})
+            _remember(
+                content,
+                project=project,
+                scope=scope,
+                tags=list(tags) if tags else None,
+                metadata=metadata if isinstance(metadata, dict) else None,
+            )
+            imported += 1
+        except Exception as e:
+            logger.warning("Failed to import %s: %s", md_file.name, e)
+            failed += 1
+    _print_import_summary(imported, skipped, failed, json_output)
+    if imported == 0:
+        raise typer.Exit(code=1)
+
+
 @app.command(name="import")
 def import_cmd(
     path: Annotated[Path, typer.Argument(help="Path to .jsonl file or markdown folder")],
@@ -274,8 +314,8 @@ def import_cmd(
             raise typer.Exit(code=1)
 
     if fmt == "markdown":
-        typer.echo("Markdown import not implemented yet")
-        raise typer.Exit(1)
+        _import_markdown(path, json_output)
+        return
 
     if fmt != "jsonl":
         typer.echo(f"Error: unknown format '{fmt}'; use jsonl or markdown", err=True)
@@ -329,10 +369,7 @@ def import_cmd(
             typer.echo(f"Warning: failed to store row: {e}", err=True)
             failed += 1
 
-    if json_output:
-        print(json.dumps({"imported": imported, "skipped": skipped, "failed": failed}))
-    else:
-        typer.echo(f"Imported: {imported} | Skipped: {skipped} | Failed: {failed}")
+    _print_import_summary(imported, skipped, failed, json_output)
 
     if imported == 0:
         raise typer.Exit(code=1)

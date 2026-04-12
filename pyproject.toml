@@ -39,3 +39,7 @@ select = ["E", "F", "I", "UP"]
 [tool.mypy]
 strict = true
 python_version = "3.11"
+
+[[tool.mypy.overrides]]
+module = "frontmatter"
+ignore_missing_imports = true
