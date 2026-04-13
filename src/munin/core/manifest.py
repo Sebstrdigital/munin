@@ -65,12 +65,12 @@ tags = ["docs", "code"]  # optional
         source_path = Path(raw_path)
 
         if not source_path.exists():
-            logger.warning(f"Source path does not exist: {source_path}, skipping")
+            logger.warning("Source path does not exist: %s, skipping", source_path)
             continue
 
         globs = source.get("globs", [])
         if not globs:
-            logger.warning(f"No globs defined for source {source_path}, skipping")
+            logger.warning("No globs defined for source %s, skipping", source_path)
             continue
 
         project = source.get("project")

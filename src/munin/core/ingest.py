@@ -75,6 +75,10 @@ def ingest(
     failures = 0
     dry_run_chunks: list[ChunkPreview] = []
 
+    if not dry_run:
+        pool = get_pool(cfg)
+        pool.open(wait=True)
+
     for source in sources:
         for glob_pattern in source.globs:
             for file_path in sorted(source.path.glob(glob_pattern)):
@@ -122,9 +126,6 @@ def ingest(
                             fingerprint = hashlib.md5(
                                 chunk.content.encode()
                             ).hexdigest()
-
-                            pool = get_pool(cfg)
-                            pool.open(wait=True)
 
                             # Look up existing thought by source identity key,
                             # not by content fingerprint — so changed content
