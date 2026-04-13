@@ -413,6 +413,7 @@ def ingest_cmd(
                     indent=2,
                 )
             )
+            return
         else:
             for c in result.dry_run_chunks:
                 scope_part = f"/{c.scope}" if c.scope else ""
