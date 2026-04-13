@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -17,6 +18,17 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class ChunkPreview:
+    """Preview of a chunk that would be stored in dry-run mode."""
+
+    source_file: str
+    heading: str
+    project: str
+    scope: str | None
+    tags: list[str]
+
+
+@dataclass
 class IngestResult:
     """Result of an ingest operation."""
 
@@ -24,6 +36,7 @@ class IngestResult:
     chunks_stored: int
     chunks_skipped: int
     failures: int
+    dry_run_chunks: list[ChunkPreview] | None = None
 
 
 def _relativize(path: Path, root: Path) -> str:
@@ -60,6 +73,7 @@ def ingest(
     chunks_stored = 0
     chunks_skipped = 0
     failures = 0
+    dry_run_chunks: list[ChunkPreview] = []
 
     for source in sources:
         for glob_pattern in source.globs:
@@ -93,33 +107,59 @@ def ingest(
                             rel_path,
                             chunk.heading,
                         )
+                        dry_run_chunks.append(
+                            ChunkPreview(
+                                source_file=rel_path,
+                                heading=chunk.heading,
+                                project=source.project,
+                                scope=source.scope,
+                                tags=list(source.tags) if source.tags else [],
+                            )
+                        )
                         chunks_stored += 1
                     else:
                         try:
-                            vec = embed_fn(chunk.content, config=cfg)
-                            vec_str = "[" + ",".join(map(repr, vec)) + "]"
+                            fingerprint = hashlib.md5(
+                                chunk.content.encode()
+                            ).hexdigest()
 
                             pool = get_pool(cfg)
                             pool.open(wait=True)
                             with pool.connection() as conn:
                                 with conn.cursor() as cur:
                                     cur.execute(
-                                        "SELECT upsert_thought(%s, %s::vector, %s, %s, "
-                                        "%s, %s::jsonb)",
-                                        (
-                                            chunk.content,
-                                            vec_str,
-                                            source.project,
-                                            source.scope,
-                                            source.tags,
-                                            metadata,
-                                        ),
+                                        "SELECT EXISTS("
+                                        "  SELECT 1 FROM thoughts"
+                                        "  WHERE project = %s"
+                                        "    AND content_fingerprint = %s"
+                                        ")",
+                                        (source.project, fingerprint),
                                     )
-                                    result = cur.fetchone()
-                                    if result:
-                                        chunks_stored += 1
-                                    else:
-                                        chunks_skipped += 1
+                                    row = cur.fetchone()
+                                    already_exists = row[0] if row else False
+
+                            if already_exists:
+                                chunks_skipped += 1
+                            else:
+                                vec = embed_fn(chunk.content, config=cfg)
+                                vec_str = "[" + ",".join(map(repr, vec)) + "]"
+
+                                with pool.connection() as conn:
+                                    with conn.cursor() as cur:
+                                        cur.execute(
+                                            "SELECT upsert_thought(%s, %s::vector, %s, %s, "
+                                            "%s, %s::jsonb)",
+                                            (
+                                                chunk.content,
+                                                vec_str,
+                                                source.project,
+                                                source.scope,
+                                                source.tags,
+                                                metadata,
+                                            ),
+                                        )
+                                        cur.fetchone()
+                                chunks_stored += 1
                         except Exception as e:
                             logger.warning("Failed to store chunk %s: %s", file_path, e)
                             failures += 1
@@ -129,4 +169,5 @@ def ingest(
         chunks_stored=chunks_stored,
         chunks_skipped=chunks_skipped,
         failures=failures,
+        dry_run_chunks=dry_run_chunks if dry_run else None,
     )

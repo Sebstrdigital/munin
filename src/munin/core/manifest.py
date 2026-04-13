@@ -75,8 +75,10 @@ tags = ["docs", "code"]  # optional
 
         project = source.get("project")
         if not project:
-            logger.warning(f"No project defined for source {source_path}, skipping")
-            continue
+            raise MuninError(
+                f"Source entry for path '{source_path}' is missing the required 'project' field. "
+                "Add 'project = \"<name>\"' to the [[source]] entry in your sources.toml."
+            )
 
         config = SourceConfig(
             path=source_path,

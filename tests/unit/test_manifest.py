@@ -126,8 +126,8 @@ project = "test"
     assert "No globs defined" in caplog.text
 
 
-def test_no_project_logs_warning_and_skips(tmp_path: Path, caplog) -> None:
-    """Source without project is skipped with warning."""
+def test_no_project_raises_munin_error(tmp_path: Path) -> None:
+    """Source without project raises MuninError identifying the malformed entry."""
     docs_dir = tmp_path / "docs"
     docs_dir.mkdir()
     manifest = tmp_path / "sources.toml"
@@ -140,10 +140,8 @@ globs = ["**/*.md"]
 """,
     )
 
-    sources = load_sources(sources_path=manifest)
-
-    assert len(sources) == 0
-    assert "No project defined" in caplog.text
+    with pytest.raises(MuninError, match="missing the required 'project' field"):
+        load_sources(sources_path=manifest)
 
 
 def test_missing_manifest_raises_munin_error(tmp_path: Path) -> None:
