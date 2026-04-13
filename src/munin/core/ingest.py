@@ -125,22 +125,52 @@ def ingest(
 
                             pool = get_pool(cfg)
                             pool.open(wait=True)
+
+                            # Look up existing thought by source identity key,
+                            # not by content fingerprint — so changed content
+                            # is detected as an update rather than a new insert.
+                            existing_id = None
+                            existing_fingerprint = None
                             with pool.connection() as conn:
                                 with conn.cursor() as cur:
                                     cur.execute(
-                                        "SELECT EXISTS("
-                                        "  SELECT 1 FROM thoughts"
-                                        "  WHERE project = %s"
-                                        "    AND content_fingerprint = %s"
-                                        ")",
-                                        (source.project, fingerprint),
+                                        "SELECT id, content_fingerprint"
+                                        " FROM thoughts"
+                                        " WHERE project = %s"
+                                        "   AND metadata->>'source_path' = %s"
+                                        "   AND metadata->>'heading' = %s"
+                                        " LIMIT 1",
+                                        (
+                                            source.project,
+                                            rel_path,
+                                            chunk.heading,
+                                        ),
                                     )
                                     row = cur.fetchone()
-                                    already_exists = row[0] if row else False
+                                    if row is not None:
+                                        existing_id = row[0]
+                                        existing_fingerprint = row[1]
 
-                            if already_exists:
+                            if existing_id is not None and existing_fingerprint == fingerprint:
+                                # Content unchanged — skip.
                                 chunks_skipped += 1
                             else:
+                                # New chunk or content has changed.
+                                # Delete old row first so the upsert inserts
+                                # a fresh row with the new fingerprint.
+                                if existing_id is not None:
+                                    logger.debug(
+                                        "ingest: updating changed chunk path=%s heading=%s",
+                                        rel_path,
+                                        chunk.heading,
+                                    )
+                                    with pool.connection() as conn:
+                                        with conn.cursor() as cur:
+                                            cur.execute(
+                                                "DELETE FROM thoughts WHERE id = %s",
+                                                (existing_id,),
+                                            )
+
                                 vec = embed_fn(chunk.content, config=cfg)
                                 vec_str = "[" + ",".join(map(repr, vec)) + "]"
 
