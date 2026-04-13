@@ -8,7 +8,7 @@ import sys
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Annotated, NoReturn, Optional
+from typing import Annotated, NoReturn
 
 import frontmatter
 import typer
@@ -18,7 +18,8 @@ from rich.table import Table
 from munin.core.config import load as _load_config
 from munin.core.db import get_pool as _get_pool
 from munin.core.embed import embed as _embed
-from munin.core.errors import MuninDBError, MuninEmbedError, MuninError
+from munin.core.errors import MuninDBError, MuninEmbedError
+from munin.core.ingest import ingest as _ingest
 from munin.core.logging import setup_logging as _setup_logging
 from munin.core.memory import forget as _forget
 from munin.core.memory import list_projects as _list_projects
@@ -55,7 +56,7 @@ def version_callback(value: bool) -> None:
 
 @app.callback()
 def main(
-    version: Optional[bool] = typer.Option(
+    version: bool | None = typer.Option(
         None,
         "--version",
         callback=version_callback,
@@ -69,11 +70,11 @@ def main(
 
 @app.command()
 def remember(
-    content: Annotated[Optional[str], typer.Argument()] = None,
-    project: Annotated[Optional[str], typer.Option("--project", "-p")] = None,
-    scope: Annotated[Optional[str], typer.Option("--scope", "-s")] = None,
-    tag: Annotated[Optional[list[str]], typer.Option("--tag", "-t")] = None,
-    metadata: Annotated[Optional[list[str]], typer.Option("--metadata", "-m")] = None,
+    content: Annotated[str | None, typer.Argument()] = None,
+    project: Annotated[str | None, typer.Option("--project", "-p")] = None,
+    scope: Annotated[str | None, typer.Option("--scope", "-s")] = None,
+    tag: Annotated[list[str] | None, typer.Option("--tag", "-t")] = None,
+    metadata: Annotated[list[str] | None, typer.Option("--metadata", "-m")] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """Store a memory in the local store."""
@@ -115,8 +116,10 @@ def remember(
 @app.command()
 def recall(
     query: str = typer.Argument(..., help="Query to search memories."),
-    project: Annotated[Optional[str], typer.Option("--project", "-p", help="Filter by project.")] = None,
-    scope: Annotated[Optional[str], typer.Option("--scope", "-s", help="Filter by scope.")] = None,
+    project: Annotated[
+        str | None, typer.Option("--project", "-p", help="Filter by project.")
+    ] = None,
+    scope: Annotated[str | None, typer.Option("--scope", "-s", help="Filter by scope.")] = None,
     limit: Annotated[int, typer.Option("--limit", "-l", help="Max results.")] = 10,
     threshold: Annotated[float, typer.Option("--threshold", help="Min similarity score.")] = 0.0,
     json_output: Annotated[bool, typer.Option("--json", help="Output as JSON array.")] = False,
@@ -298,7 +301,9 @@ def _import_markdown(folder: Path, json_output: bool) -> None:
 @app.command(name="import")
 def import_cmd(
     path: Annotated[Path, typer.Argument(help="Path to .jsonl file or markdown folder")],
-    fmt: Annotated[Optional[str], typer.Option("--format", "-f", help="Force format: jsonl or markdown")] = None,
+    fmt: Annotated[
+        str | None, typer.Option("--format", "-f", help="Force format: jsonl or markdown")
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json")] = False,
 ) -> None:
     """Import memories from a .jsonl file or markdown folder."""
@@ -309,7 +314,9 @@ def import_cmd(
         elif path.suffix == ".jsonl":
             fmt = "jsonl"
         else:
-            typer.echo("Error: cannot detect format; use --format jsonl or --format markdown", err=True)
+            typer.echo(
+                "Error: cannot detect format; use --format jsonl or --format markdown", err=True
+            )
             raise typer.Exit(code=1)
 
     if fmt == "markdown":
@@ -372,6 +379,74 @@ def import_cmd(
 
     if imported == 0:
         raise typer.Exit(code=1)
+
+
+@app.command(name="ingest")
+def ingest_cmd(
+    sources: Annotated[
+        Path | None,
+        typer.Option("--sources", help="Path to sources.toml"),
+    ] = None,
+    dry_run: Annotated[bool, typer.Option("--dry-run", help="Preview without storing")] = False,
+    json_output: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
+) -> None:
+    """Ingest knowledge from configured sources in sources.toml."""
+    try:
+        result = _ingest(sources_path=sources, dry_run=dry_run)
+    except Exception as e:
+        _handle_error(e)
+
+    if dry_run and result.dry_run_chunks:
+        if json_output:
+            print(
+                json.dumps(
+                    [
+                        {
+                            "source_file": c.source_file,
+                            "heading": c.heading,
+                            "project": c.project,
+                            "scope": c.scope,
+                            "tags": c.tags,
+                        }
+                        for c in result.dry_run_chunks
+                    ],
+                    indent=2,
+                )
+            )
+            return
+        else:
+            for c in result.dry_run_chunks:
+                scope_part = f"/{c.scope}" if c.scope else ""
+                tags_part = f"  tags={c.tags}" if c.tags else ""
+                typer.echo(
+                    f"[dry-run] {c.source_file}  heading={c.heading!r}"
+                    f"  project={c.project}{scope_part}{tags_part}"
+                )
+
+    if json_output and not dry_run:
+        print(
+            json.dumps(
+                {
+                    "files_scanned": result.files_scanned,
+                    "chunks_stored": result.chunks_stored,
+                    "chunks_skipped": result.chunks_skipped,
+                    "failures": result.failures,
+                }
+            )
+        )
+    elif not dry_run:
+        typer.echo(
+            f"Files scanned: {result.files_scanned} | "
+            f"Stored: {result.chunks_stored} | "
+            f"Skipped: {result.chunks_skipped} | "
+            f"Failed: {result.failures}"
+        )
+    else:
+        typer.echo(
+            f"[dry-run] Files scanned: {result.files_scanned} | "
+            f"Would store: {result.chunks_stored} | "
+            f"Failed: {result.failures}"
+        )
 
 
 @app.command()
@@ -516,9 +591,7 @@ def doctor(
             pool.open(wait=True)
         with pool.connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT 1 FROM information_schema.tables WHERE table_name = 'thoughts'"
-                )
+                cur.execute("SELECT 1 FROM information_schema.tables WHERE table_name = 'thoughts'")
                 if cur.fetchone() is None:
                     raise RuntimeError("thoughts table not found")
 
@@ -530,7 +603,8 @@ def doctor(
         with pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "SELECT proname FROM pg_proc WHERE proname IN ('match_thoughts', 'upsert_thought')"
+                    "SELECT proname FROM pg_proc"
+                    " WHERE proname IN ('match_thoughts', 'upsert_thought')"
                 )
                 found = {row[0] for row in cur.fetchall()}
                 missing = {"match_thoughts", "upsert_thought"} - found
