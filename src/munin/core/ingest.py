@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
@@ -157,26 +158,23 @@ def ingest(
                                 chunks_skipped += 1
                             else:
                                 # New chunk or content has changed.
-                                # Delete old row first so the upsert inserts
-                                # a fresh row with the new fingerprint.
-                                if existing_id is not None:
-                                    logger.debug(
-                                        "ingest: updating changed chunk path=%s heading=%s",
-                                        rel_path,
-                                        chunk.heading,
-                                    )
-                                    with pool.connection() as conn:
-                                        with conn.cursor() as cur:
-                                            cur.execute(
-                                                "DELETE FROM thoughts WHERE id = %s",
-                                                (existing_id,),
-                                            )
-
+                                # Compute embedding BEFORE opening the
+                                # transaction so DELETE + INSERT are atomic.
                                 vec = embed_fn(chunk.content, config=cfg)
                                 vec_str = "[" + ",".join(map(repr, vec)) + "]"
 
                                 with pool.connection() as conn:
                                     with conn.cursor() as cur:
+                                        if existing_id is not None:
+                                            logger.debug(
+                                                "ingest: updating changed chunk path=%s heading=%s",
+                                                rel_path,
+                                                chunk.heading,
+                                            )
+                                            cur.execute(
+                                                "DELETE FROM thoughts WHERE id = %s",
+                                                (existing_id,),
+                                            )
                                         cur.execute(
                                             "SELECT upsert_thought(%s, %s::vector, %s, %s, "
                                             "%s, %s::jsonb)",
@@ -186,7 +184,7 @@ def ingest(
                                                 source.project,
                                                 source.scope,
                                                 source.tags,
-                                                metadata,
+                                                json.dumps(metadata),
                                             ),
                                         )
                                         cur.fetchone()
