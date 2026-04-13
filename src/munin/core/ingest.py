@@ -38,6 +38,7 @@ class IngestResult:
     chunks_skipped: int
     failures: int
     dry_run_chunks: list[ChunkPreview] | None = None
+    chunks_would_store: int = 0
 
 
 def _relativize(path: Path, root: Path) -> str:
@@ -73,101 +74,151 @@ def ingest(
     files_scanned = 0
     chunks_stored = 0
     chunks_skipped = 0
+    chunks_would_store = 0
     failures = 0
     dry_run_chunks: list[ChunkPreview] = []
 
-    if not dry_run:
-        pool = get_pool(cfg)
-        pool.open(wait=True)
+    # DR-001: pool is lazy-opened on first write; closed in finally to prevent leak.
+    pool = None
 
-    for source in sources:
-        for glob_pattern in source.globs:
-            for file_path in sorted(source.path.glob(glob_pattern)):
-                if not file_path.is_file():
-                    continue
+    try:
+        for source in sources:
+            for glob_pattern in source.globs:
+                for file_path in sorted(source.path.glob(glob_pattern)):
+                    if not file_path.is_file():
+                        continue
 
-                files_scanned += 1
-
-                try:
-                    content = file_path.read_text(encoding="utf-8")
-                except Exception as e:
-                    logger.warning("Failed to read %s: %s", file_path, e)
-                    failures += 1
-                    continue
-
-                chunks = chunk_markdown(content, file_path.name)
-
-                for chunk in chunks:
-                    rel_path = _relativize(file_path, source.path)
-                    metadata: dict[str, Any] = {
-                        "source_path": rel_path,
-                        "heading": chunk.heading,
-                    }
-
-                    if dry_run:
-                        logger.info(
-                            "[DRY-RUN] would store: project=%s scope=%s path=%s heading=%s",
-                            source.project,
-                            source.scope,
-                            rel_path,
-                            chunk.heading,
+                    # DR-008: symlink containment — reject paths that escape the
+                    # declared source root after symlink resolution.
+                    if not str(file_path.resolve()).startswith(
+                        str(source.path.resolve())
+                    ):
+                        logger.warning(
+                            "Skipping symlink escape: %s escapes %s",
+                            file_path,
+                            source.path,
                         )
-                        dry_run_chunks.append(
-                            ChunkPreview(
-                                source_file=rel_path,
-                                heading=chunk.heading,
-                                project=source.project,
-                                scope=source.scope,
-                                tags=list(source.tags) if source.tags else [],
+                        continue
+
+                    # DR-009: skip files larger than 1 MB to avoid OOM on huge blobs.
+                    try:
+                        file_size = file_path.stat().st_size
+                    except OSError as e:
+                        logger.warning("Failed to stat %s: %s", file_path, e)
+                        failures += 1
+                        continue
+
+                    if file_size > 1_048_576:
+                        logger.warning(
+                            "Skipping oversized file %s (%d bytes > 1 MB)",
+                            file_path,
+                            file_size,
+                        )
+                        continue
+
+                    files_scanned += 1
+
+                    try:
+                        content = file_path.read_text(encoding="utf-8")
+                    except Exception as e:
+                        logger.warning("Failed to read %s: %s", file_path, e)
+                        failures += 1
+                        continue
+
+                    chunks = chunk_markdown(content, file_path.name)
+
+                    for chunk in chunks:
+                        rel_path = _relativize(file_path, source.path)
+                        metadata: dict[str, Any] = {
+                            "source_path": rel_path,
+                            "heading": chunk.heading,
+                        }
+
+                        if dry_run:
+                            logger.info(
+                                "[DRY-RUN] would store: project=%s scope=%s path=%s heading=%s",
+                                source.project,
+                                source.scope,
+                                rel_path,
+                                chunk.heading,
                             )
-                        )
-                        chunks_stored += 1
-                    else:
-                        try:
-                            fingerprint = hashlib.md5(
-                                chunk.content.encode()
-                            ).hexdigest()
+                            dry_run_chunks.append(
+                                ChunkPreview(
+                                    source_file=rel_path,
+                                    heading=chunk.heading,
+                                    project=source.project,
+                                    scope=source.scope,
+                                    tags=list(source.tags) if source.tags else [],
+                                )
+                            )
+                            # DR-012: dry_run counts go to chunks_would_store,
+                            # not chunks_stored, to preserve semantic accuracy.
+                            chunks_would_store += 1
+                        else:
+                            # DR-001: lazy-open pool only when first write needed.
+                            if pool is None:
+                                pool = get_pool(cfg)
+                                pool.open(wait=True)
 
-                            # Look up existing thought by source identity key,
-                            # not by content fingerprint — so changed content
-                            # is detected as an update rather than a new insert.
-                            existing_id = None
-                            existing_fingerprint = None
-                            with pool.connection() as conn:
-                                with conn.cursor() as cur:
-                                    cur.execute(
-                                        "SELECT id, content_fingerprint"
-                                        " FROM thoughts"
-                                        " WHERE project = %s"
-                                        "   AND metadata->>'source_path' = %s"
-                                        "   AND metadata->>'heading' = %s"
-                                        " LIMIT 1",
-                                        (
-                                            source.project,
-                                            rel_path,
-                                            chunk.heading,
-                                        ),
-                                    )
-                                    row = cur.fetchone()
-                                    if row is not None:
-                                        existing_id = row[0]
-                                        existing_fingerprint = row[1]
+                            try:
+                                fingerprint = hashlib.md5(
+                                    chunk.content.encode()
+                                ).hexdigest()
 
-                            if existing_id is not None and existing_fingerprint == fingerprint:
-                                # Content unchanged — skip.
-                                chunks_skipped += 1
-                            else:
-                                # New chunk or content has changed.
-                                # Compute embedding BEFORE opening the
-                                # transaction so DELETE + INSERT are atomic.
+                                # DR-003: use fixed-precision formatting instead of
+                                # repr() which can emit 'nan'/'inf' — invalid
+                                # pgvector literals.
                                 vec = embed_fn(chunk.content, config=cfg)
-                                vec_str = "[" + ",".join(map(repr, vec)) + "]"
+                                vec_str = (
+                                    "[" + ",".join(f"{v:.8g}" for v in vec) + "]"
+                                )
 
+                                # DR-006 + DR-007: single connection for SELECT,
+                                # DELETE, and upsert to keep all three atomic.
+                                # upsert_thought ON CONFLICT only updates tags/
+                                # metadata — not content or embedding — so a
+                                # DELETE before upsert is still required when
+                                # content has changed.
                                 with pool.connection() as conn:
                                     with conn.cursor() as cur:
+                                        # Look up existing thought by source identity
+                                        # key, not by content fingerprint — so changed
+                                        # content is detected as an update rather than
+                                        # a new insert.
+                                        cur.execute(
+                                            "SELECT id, content_fingerprint"
+                                            " FROM thoughts"
+                                            " WHERE project = %s"
+                                            "   AND metadata->>'source_path' = %s"
+                                            "   AND metadata->>'heading' = %s"
+                                            " LIMIT 1",
+                                            (
+                                                source.project,
+                                                rel_path,
+                                                chunk.heading,
+                                            ),
+                                        )
+                                        row = cur.fetchone()
+                                        existing_id = (
+                                            row[0] if row is not None else None
+                                        )
+                                        existing_fingerprint = (
+                                            row[1] if row is not None else None
+                                        )
+
+                                        if (
+                                            existing_id is not None
+                                            and existing_fingerprint == fingerprint
+                                        ):
+                                            # Content unchanged — skip.
+                                            chunks_skipped += 1
+                                            continue
+
+                                        # New chunk or content has changed.
                                         if existing_id is not None:
                                             logger.debug(
-                                                "ingest: updating changed chunk path=%s heading=%s",
+                                                "ingest: updating changed chunk"
+                                                " path=%s heading=%s",
                                                 rel_path,
                                                 chunk.heading,
                                             )
@@ -176,8 +227,8 @@ def ingest(
                                                 (existing_id,),
                                             )
                                         cur.execute(
-                                            "SELECT upsert_thought(%s, %s::vector, %s, %s, "
-                                            "%s, %s::jsonb)",
+                                            "SELECT upsert_thought(%s, %s::vector,"
+                                            " %s, %s, %s, %s::jsonb)",
                                             (
                                                 chunk.content,
                                                 vec_str,
@@ -189,9 +240,15 @@ def ingest(
                                         )
                                         cur.fetchone()
                                 chunks_stored += 1
-                        except Exception as e:
-                            logger.warning("Failed to store chunk %s: %s", file_path, e)
-                            failures += 1
+                            except Exception as e:
+                                logger.warning(
+                                    "Failed to store chunk %s: %s", file_path, e
+                                )
+                                failures += 1
+    finally:
+        # DR-001: always close pool to release connections, even on exception.
+        if pool is not None:
+            pool.close()
 
     return IngestResult(
         files_scanned=files_scanned,
@@ -199,4 +256,5 @@ def ingest(
         chunks_skipped=chunks_skipped,
         failures=failures,
         dry_run_chunks=dry_run_chunks if dry_run else None,
+        chunks_would_store=chunks_would_store,
     )

@@ -68,7 +68,8 @@ def recall(
     match_limit = limit if limit is not None else cfg.default_limit
     logger.debug("recall: project=%s query_len=%d limit=%d", resolved_project, len(query), match_limit)
     vec = embed(query, config=cfg)
-    vec_str = "[" + ",".join(map(repr, vec)) + "]"
+    # DR-003: fixed-precision formatting avoids repr() emitting 'nan'/'inf'.
+    vec_str = "[" + ",".join(f"{v:.8g}" for v in vec) + "]"
 
     pool = get_pool(cfg)
     pool.open(wait=True)
@@ -199,7 +200,8 @@ def remember(
 
     logger.info("remember: project=%s content_len=%d", resolved_project, len(content))
     vec = embed(content, config=cfg)
-    embedding_str = "[" + ",".join(map(repr, vec)) + "]"
+    # DR-003: fixed-precision formatting avoids repr() emitting 'nan'/'inf'.
+    embedding_str = "[" + ",".join(f"{v:.8g}" for v in vec) + "]"
 
     pool = get_pool(cfg)
     pool.open(wait=True)

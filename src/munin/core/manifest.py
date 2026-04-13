@@ -68,17 +68,17 @@ tags = ["docs", "code"]  # optional
             logger.warning("Source path does not exist: %s, skipping", source_path)
             continue
 
-        globs = source.get("globs", [])
+        globs = source.get("globs", ["**/*.md"])
         if not globs:
-            logger.warning("No globs defined for source %s, skipping", source_path)
-            continue
+            logger.debug("No globs defined for source %s, using empty glob list", source_path)
 
         project = source.get("project")
         if not project:
-            raise MuninError(
-                f"Source entry for path '{source_path}' is missing the required 'project' field. "
-                "Add 'project = \"<name>\"' to the [[source]] entry in your sources.toml."
+            logger.warning(
+                "Source entry for path '%s' is missing required 'project' field, skipping",
+                source_path,
             )
+            continue
 
         config = SourceConfig(
             path=source_path,

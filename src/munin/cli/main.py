@@ -337,48 +337,50 @@ def import_cmd(
 
     try:
         lines = path.read_text(encoding="utf-8").splitlines()
+
+        for line in lines:
+            if not line.strip():
+                continue
+
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                typer.echo(f"Warning: skipping invalid JSON line: {line[:80]}", err=True)
+                skipped += 1
+                continue
+
+            content = row.get("content")
+            if not content:
+                typer.echo("Warning: skipping row missing 'content' field", err=True)
+                skipped += 1
+                continue
+
+            proj = row.get("project") or _current_project()
+            scope = row.get("scope")
+            tags = row.get("tags")
+            metadata = row.get("metadata")
+
+            try:
+                _remember(
+                    content,
+                    project=proj,
+                    scope=scope,
+                    tags=list(tags) if tags else None,
+                    metadata=metadata if isinstance(metadata, dict) else None,
+                )
+                imported += 1
+            except Exception as e:
+                typer.echo(f"Warning: failed to store row: {e}", err=True)
+                failed += 1
+
+        _print_import_summary(imported, skipped, failed, json_output)
+
+        if imported == 0:
+            raise typer.Exit(code=1)
+    except typer.Exit:
+        raise
     except Exception as e:
         _handle_error(e)
-
-    for line in lines:
-        if not line.strip():
-            continue
-
-        try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
-            typer.echo(f"Warning: skipping invalid JSON line: {line[:80]}", err=True)
-            skipped += 1
-            continue
-
-        content = row.get("content")
-        if not content:
-            typer.echo("Warning: skipping row missing 'content' field", err=True)
-            skipped += 1
-            continue
-
-        proj = row.get("project") or _current_project()
-        scope = row.get("scope")
-        tags = row.get("tags")
-        metadata = row.get("metadata")
-
-        try:
-            _remember(
-                content,
-                project=proj,
-                scope=scope,
-                tags=list(tags) if tags else None,
-                metadata=metadata if isinstance(metadata, dict) else None,
-            )
-            imported += 1
-        except Exception as e:
-            typer.echo(f"Warning: failed to store row: {e}", err=True)
-            failed += 1
-
-    _print_import_summary(imported, skipped, failed, json_output)
-
-    if imported == 0:
-        raise typer.Exit(code=1)
 
 
 @app.command(name="ingest")
@@ -393,60 +395,62 @@ def ingest_cmd(
     """Ingest knowledge from configured sources in sources.toml."""
     try:
         result = _ingest(sources_path=sources, dry_run=dry_run)
-    except Exception as e:
-        _handle_error(e)
 
-    if dry_run and result.dry_run_chunks:
-        if json_output:
+        if dry_run and result.dry_run_chunks:
+            if json_output:
+                print(
+                    json.dumps(
+                        [
+                            {
+                                "source_file": c.source_file,
+                                "heading": c.heading,
+                                "project": c.project,
+                                "scope": c.scope,
+                                "tags": c.tags,
+                            }
+                            for c in result.dry_run_chunks
+                        ],
+                        indent=2,
+                    )
+                )
+                return
+            else:
+                for c in result.dry_run_chunks:
+                    scope_part = f"/{c.scope}" if c.scope else ""
+                    tags_part = f"  tags={c.tags}" if c.tags else ""
+                    typer.echo(
+                        f"[dry-run] {c.source_file}  heading={c.heading!r}"
+                        f"  project={c.project}{scope_part}{tags_part}"
+                    )
+
+        if json_output and not dry_run:
             print(
                 json.dumps(
-                    [
-                        {
-                            "source_file": c.source_file,
-                            "heading": c.heading,
-                            "project": c.project,
-                            "scope": c.scope,
-                            "tags": c.tags,
-                        }
-                        for c in result.dry_run_chunks
-                    ],
-                    indent=2,
+                    {
+                        "files_scanned": result.files_scanned,
+                        "chunks_stored": result.chunks_stored,
+                        "chunks_skipped": result.chunks_skipped,
+                        "failures": result.failures,
+                    }
                 )
             )
-            return
+        elif not dry_run:
+            typer.echo(
+                f"Files scanned: {result.files_scanned} | "
+                f"Stored: {result.chunks_stored} | "
+                f"Skipped: {result.chunks_skipped} | "
+                f"Failed: {result.failures}"
+            )
         else:
-            for c in result.dry_run_chunks:
-                scope_part = f"/{c.scope}" if c.scope else ""
-                tags_part = f"  tags={c.tags}" if c.tags else ""
-                typer.echo(
-                    f"[dry-run] {c.source_file}  heading={c.heading!r}"
-                    f"  project={c.project}{scope_part}{tags_part}"
-                )
-
-    if json_output and not dry_run:
-        print(
-            json.dumps(
-                {
-                    "files_scanned": result.files_scanned,
-                    "chunks_stored": result.chunks_stored,
-                    "chunks_skipped": result.chunks_skipped,
-                    "failures": result.failures,
-                }
+            typer.echo(
+                f"[dry-run] Files scanned: {result.files_scanned} | "
+                f"Would store: {result.chunks_would_store} | "
+                f"Failed: {result.failures}"
             )
-        )
-    elif not dry_run:
-        typer.echo(
-            f"Files scanned: {result.files_scanned} | "
-            f"Stored: {result.chunks_stored} | "
-            f"Skipped: {result.chunks_skipped} | "
-            f"Failed: {result.failures}"
-        )
-    else:
-        typer.echo(
-            f"[dry-run] Files scanned: {result.files_scanned} | "
-            f"Would store: {result.chunks_stored} | "
-            f"Failed: {result.failures}"
-        )
+    except typer.Exit:
+        raise
+    except Exception as e:
+        _handle_error(e)
 
 
 @app.command()

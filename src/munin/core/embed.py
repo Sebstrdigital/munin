@@ -46,12 +46,21 @@ def _post_embeddings(
     )
 
 
-def embed(text: str, *, config: MuninConfig | None = None) -> list[float]:
+def embed(
+    text: str,
+    *,
+    config: MuninConfig | None = None,
+    client: httpx.Client | None = None,
+) -> list[float]:
     """Return the embedding vector for a single text string.
 
     Args:
         text: The input text to embed.
         config: Optional config override; uses load() if not provided.
+        client: Optional shared httpx.Client to reuse across calls. When
+            provided, the caller owns the client lifecycle and no new
+            connection is opened. When None (default), a fresh client is
+            created and closed after the call.
 
     Returns:
         A list of floats of length config.embed_dim.
@@ -63,8 +72,11 @@ def embed(text: str, *, config: MuninConfig | None = None) -> list[float]:
     url = f"{cfg.embed_url}/v1/embeddings"
 
     logger.debug("embed: url=%s text_len=%d", url, len(text))
-    with httpx.Client() as client:
+    if client is not None:
         resp = _post_embeddings(client, url, {"input": text})
+    else:
+        with httpx.Client() as _client:
+            resp = _post_embeddings(_client, url, {"input": text})
 
     if resp.status_code != 200:
         raise MuninEmbedError(
