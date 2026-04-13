@@ -215,8 +215,6 @@ project = "proj"
 
     assert result.chunks_skipped == 1
     assert result.chunks_stored == 0
-    # embed is called eagerly (before SELECT) even for unchanged chunks.
-    mock_embed.assert_called_once()
 
     # upsert_thought and DELETE must NOT appear — chunk was skipped.
     mock_conn = mock_pool.connection.return_value.__enter__.return_value

@@ -73,7 +73,10 @@ def embed(
 
     logger.debug("embed: url=%s text_len=%d", url, len(text))
     if client is not None:
-        resp = _post_embeddings(client, url, {"input": text})
+        try:
+            resp = _post_embeddings(client, url, {"input": text})
+        except (httpx.TransportError, RuntimeError) as exc:
+            raise MuninEmbedError(f"embed request failed: {exc}") from exc
     else:
         with httpx.Client() as _client:
             resp = _post_embeddings(_client, url, {"input": text})

@@ -180,65 +180,68 @@ def ingest(
                                 # DELETE before upsert is still required when
                                 # content has changed.
                                 with pool.connection() as conn:
-                                    with conn.cursor() as cur:
-                                        # Look up existing thought by source identity
-                                        # key, not by content fingerprint — so changed
-                                        # content is detected as an update rather than
-                                        # a new insert.
-                                        cur.execute(
-                                            "SELECT id, content_fingerprint"
-                                            " FROM thoughts"
-                                            " WHERE project = %s"
-                                            "   AND metadata->>'source_path' = %s"
-                                            "   AND metadata->>'heading' = %s"
-                                            " LIMIT 1",
-                                            (
-                                                source.project,
-                                                rel_path,
-                                                chunk.heading,
-                                            ),
-                                        )
-                                        row = cur.fetchone()
-                                        existing_id = (
-                                            row[0] if row is not None else None
-                                        )
-                                        existing_fingerprint = (
-                                            row[1] if row is not None else None
-                                        )
-
-                                        if (
-                                            existing_id is not None
-                                            and existing_fingerprint == fingerprint
-                                        ):
-                                            # Content unchanged — skip.
-                                            chunks_skipped += 1
-                                            continue
-
-                                        # New chunk or content has changed.
-                                        if existing_id is not None:
-                                            logger.debug(
-                                                "ingest: updating changed chunk"
-                                                " path=%s heading=%s",
-                                                rel_path,
-                                                chunk.heading,
-                                            )
+                                    with conn.transaction():
+                                        with conn.cursor() as cur:
+                                            # Look up existing thought by source
+                                            # identity key, not by content fingerprint
+                                            # — so changed content is detected as an
+                                            # update rather than a new insert.
                                             cur.execute(
-                                                "DELETE FROM thoughts WHERE id = %s",
-                                                (existing_id,),
+                                                "SELECT id, content_fingerprint"
+                                                " FROM thoughts"
+                                                " WHERE project = %s"
+                                                "   AND metadata->>'source_path' = %s"
+                                                "   AND metadata->>'heading' = %s"
+                                                " LIMIT 1",
+                                                (
+                                                    source.project,
+                                                    rel_path,
+                                                    chunk.heading,
+                                                ),
                                             )
-                                        cur.execute(
-                                            "SELECT upsert_thought(%s, %s::vector,"
-                                            " %s, %s, %s, %s::jsonb)",
-                                            (
-                                                chunk.content,
-                                                vec_str,
-                                                source.project,
-                                                source.scope,
-                                                source.tags,
-                                                json.dumps(metadata),
-                                            ),
-                                        )
-                                        cur.fetchone()
+                                            row = cur.fetchone()
+                                            existing_id = (
+                                                row[0] if row is not None else None
+                                            )
+                                            existing_fingerprint = (
+                                                row[1] if row is not None else None
+                                            )
+
+                                            if (
+                                                existing_id is not None
+                                                and existing_fingerprint == fingerprint
+                                            ):
+                                                # Content unchanged — skip.
+                                                chunks_skipped += 1
+                                                continue
+
+                                            # New chunk or content has changed.
+                                            if existing_id is not None:
+                                                logger.debug(
+                                                    "ingest: updating changed chunk"
+                                                    " path=%s heading=%s",
+                                                    rel_path,
+                                                    chunk.heading,
+                                                )
+                                                cur.execute(
+                                                    "DELETE FROM thoughts"
+                                                    " WHERE id = %s",
+                                                    (existing_id,),
+                                                )
+                                            cur.execute(
+                                                "SELECT upsert_thought("
+                                                "%s, %s::vector,"
+                                                " %s, %s, %s, %s::jsonb)",
+                                                (
+                                                    chunk.content,
+                                                    vec_str,
+                                                    source.project,
+                                                    source.scope,
+                                                    source.tags,
+                                                    json.dumps(metadata),
+                                                ),
+                                            )
+                                            cur.fetchone()
                                 chunks_stored += 1
                             except Exception as e:
                                 logger.warning(
@@ -247,8 +250,12 @@ def ingest(
                                 failures += 1
     finally:
         # DR-001: always close pool to release connections, even on exception.
+        # Wrapped in try/except so teardown errors don't shadow the original.
         if pool is not None:
-            pool.close()
+            try:
+                pool.close()
+            except Exception as close_err:
+                logger.warning("pool.close() failed: %s", close_err)
 
     return IngestResult(
         files_scanned=files_scanned,

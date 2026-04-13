@@ -396,25 +396,9 @@ def ingest_cmd(
     try:
         result = _ingest(sources_path=sources, dry_run=dry_run)
 
-        if dry_run and result.dry_run_chunks:
-            if json_output:
-                print(
-                    json.dumps(
-                        [
-                            {
-                                "source_file": c.source_file,
-                                "heading": c.heading,
-                                "project": c.project,
-                                "scope": c.scope,
-                                "tags": c.tags,
-                            }
-                            for c in result.dry_run_chunks
-                        ],
-                        indent=2,
-                    )
-                )
-                return
-            else:
+        if dry_run:
+            # Preview: list individual chunks if any exist
+            if result.dry_run_chunks and not json_output:
                 for c in result.dry_run_chunks:
                     scope_part = f"/{c.scope}" if c.scope else ""
                     tags_part = f"  tags={c.tags}" if c.tags else ""
@@ -422,31 +406,60 @@ def ingest_cmd(
                         f"[dry-run] {c.source_file}  heading={c.heading!r}"
                         f"  project={c.project}{scope_part}{tags_part}"
                     )
-
-        if json_output and not dry_run:
-            print(
-                json.dumps(
-                    {
-                        "files_scanned": result.files_scanned,
-                        "chunks_stored": result.chunks_stored,
-                        "chunks_skipped": result.chunks_skipped,
-                        "failures": result.failures,
-                    }
+            # Summary: always output (JSON or text)
+            if json_output:
+                print(
+                    json.dumps(
+                        {
+                            "files_scanned": result.files_scanned,
+                            "chunks_would_store": result.chunks_would_store,
+                            "failures": result.failures,
+                            "chunks": [
+                                {
+                                    "source_file": c.source_file,
+                                    "heading": c.heading,
+                                    "project": c.project,
+                                    "scope": c.scope,
+                                    "tags": c.tags,
+                                }
+                                for c in (result.dry_run_chunks or [])
+                            ],
+                        },
+                        indent=2,
+                    )
                 )
-            )
-        elif not dry_run:
-            typer.echo(
-                f"Files scanned: {result.files_scanned} | "
-                f"Stored: {result.chunks_stored} | "
-                f"Skipped: {result.chunks_skipped} | "
-                f"Failed: {result.failures}"
-            )
+            else:
+                typer.echo(
+                    f"[dry-run] Files scanned: {result.files_scanned} | "
+                    f"Would store: {result.chunks_would_store} | "
+                    f"Failed: {result.failures}"
+                )
+            # Warn if nothing was found
+            if result.files_scanned == 0:
+                typer.echo(
+                    "Warning: no files matched any source. Check sources.toml.",
+                    err=True,
+                )
         else:
-            typer.echo(
-                f"[dry-run] Files scanned: {result.files_scanned} | "
-                f"Would store: {result.chunks_would_store} | "
-                f"Failed: {result.failures}"
-            )
+            # Live run summary
+            if json_output:
+                print(
+                    json.dumps(
+                        {
+                            "files_scanned": result.files_scanned,
+                            "chunks_stored": result.chunks_stored,
+                            "chunks_skipped": result.chunks_skipped,
+                            "failures": result.failures,
+                        }
+                    )
+                )
+            else:
+                typer.echo(
+                    f"Files scanned: {result.files_scanned} | "
+                    f"Stored: {result.chunks_stored} | "
+                    f"Skipped: {result.chunks_skipped} | "
+                    f"Failed: {result.failures}"
+                )
     except typer.Exit:
         raise
     except Exception as e:
