@@ -22,16 +22,24 @@ curl -L -o models/nomic-embed-text-v1.5.Q4_K_M.gguf \
   https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf
 ```
 
-### 3. Start the Docker services
+### 3. Start the services
+
+Using Docker:
 
 ```bash
 docker compose up -d
 ```
 
+Or Podman:
+
+```bash
+podman compose up -d
+```
+
 Wait for both services to report as healthy:
 
 ```bash
-docker compose ps
+docker compose ps   # or: podman compose ps
 ```
 
 ### 4. Apply database migrations
@@ -39,6 +47,8 @@ docker compose ps
 ```bash
 for f in sql/*.sql; do cat "$f" | docker exec -i munin-postgres psql -U munin -d munin; done
 ```
+
+If using Podman, replace `docker exec` with `podman exec`.
 
 ### 5. Install the CLI
 
