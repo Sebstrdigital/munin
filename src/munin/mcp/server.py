@@ -38,7 +38,7 @@ def _handle_errors(func: F) -> F:
         try:
             return func(*args, **kwargs)
         except MuninDBError as e:
-            return _error_response("db_unreachable", str(e), "run `docker compose up -d`")
+            return _error_response("db_unreachable", str(e), "run `podman compose up -d`")
         except MuninEmbedError as e:
             return _error_response("embed_unreachable", str(e), "check llama.cpp container")
         except MuninError as e:

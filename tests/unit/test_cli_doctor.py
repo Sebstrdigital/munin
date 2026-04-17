@@ -143,7 +143,7 @@ class TestDoctorFailures:
         ):
             out = _RUNNER.invoke(app, ["doctor"])
         assert out.exit_code == 1
-        assert "docker compose up -d" in out.output
+        assert "podman compose up -d" in out.output
 
     def test_embed_unreachable_shows_hint(self) -> None:
         with (

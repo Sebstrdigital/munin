@@ -4,10 +4,10 @@ End-to-end walkthrough for connecting munin's MCP server to Claude Code or Curso
 
 ## Prerequisites
 
-1. Docker Compose stack running and healthy:
+1. Podman Compose stack running and healthy:
    ```bash
-   docker compose up -d
-   docker compose ps   # both services show "healthy"
+   podman compose up -d
+   podman compose ps   # both services show "healthy"
    ```
 
 2. munin installed (editable install is fine):
@@ -145,7 +145,7 @@ The entry point is only available after `pip install -e .` or `pipx install`. Ru
 ### DB unreachable error
 
 ```json
-{"error": {"code": "db_unreachable", "message": "...", "hint": "run `docker compose up -d`"}}
+{"error": {"code": "db_unreachable", "message": "...", "hint": "run `podman compose up -d`"}}
 ```
 
 Start the compose stack. The server does not crash on DB errors — it returns structured error responses so the calling agent can surface a readable message.
@@ -156,7 +156,7 @@ Start the compose stack. The server does not crash on DB errors — it returns s
 {"error": {"code": "embed_unreachable", "message": "...", "hint": "check llama.cpp container"}}
 ```
 
-Check the `llama-embed` container: `docker compose logs llama-embed`. The model file must be present at `./models/nomic-embed-text-v1.5.Q4_K_M.gguf`.
+Check the `llama-embed` container: `podman compose logs llama-embed`. The model file must be present at `./models/nomic-embed-text-v1.5.Q4_K_M.gguf`.
 
 ### Project shows as `"unknown"`
 

@@ -59,7 +59,7 @@ class TestRememberErrors:
         with patch("munin.cli.main._remember", side_effect=MuninDBError("conn failed")):
             out = _RUNNER.invoke(app, ["remember", "hello", "--json"])
         assert out.exit_code == 2
-        assert "docker compose up -d" in out.stderr
+        assert "podman compose up -d" in out.stderr
         assert "database" in out.stderr
 
     def test_embed_error_exits_2(self) -> None:

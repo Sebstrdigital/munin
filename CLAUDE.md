@@ -43,9 +43,9 @@ mcp/ ─┘          └> llama.cpp embed
 ## Running the Stack
 
 ```bash
-docker compose up -d
-docker compose ps          # both healthy
-docker compose logs -f llama-embed
+podman compose up -d
+podman compose ps          # both healthy
+podman compose logs -f llama-embed
 ```
 
 ## Conventions

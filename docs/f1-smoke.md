@@ -4,14 +4,14 @@ This document describes a reproducible psql session that exercises the full SQL 
 
 ## Prerequisites
 
-1. Docker Compose stack is running:
+1. Podman Compose stack is running:
    ```bash
-   docker compose up -d
+   podman compose up -d
    ```
 
 2. Both services are healthy:
    ```bash
-   docker compose ps
+   podman compose ps
    ```
    Expected: `munin-postgres` and `llama-embed` both show "healthy" status.
 

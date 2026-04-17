@@ -130,7 +130,7 @@ class TestRecallErrors:
         with patch("munin.cli.main._recall", side_effect=MuninDBError("conn failed")):
             out = _RUNNER.invoke(app, ["recall", "query"])
         assert out.exit_code == 2
-        assert "docker compose up -d" in out.stderr
+        assert "podman compose up -d" in out.stderr
 
     def test_validation_error_exits_1(self) -> None:
         from munin.core.errors import MuninError

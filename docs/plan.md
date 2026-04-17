@@ -8,7 +8,7 @@
   - `postgres` (pgvector/pgvector:pg16 image)
   - `llama-embed` (ghcr.io/ggerganov/llama.cpp:server, mounts `./models`)
 - [ ] Download `nomic-embed-text-v1.5.Q4_K_M.gguf` to `./models/`
-- [ ] `docker compose up` → both healthy
+- [ ] `podman compose up` → both healthy
 - [ ] `curl localhost:8080/v1/embeddings` returns 768-dim vector
 - [ ] `psql` connects, `create extension vector` works
 

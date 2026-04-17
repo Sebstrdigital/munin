@@ -119,7 +119,7 @@ class TestShowErrors:
         with patch("munin.cli.main._show", side_effect=MuninDBError("conn failed")):
             out = _RUNNER.invoke(app, ["show", str(_ID)])
         assert out.exit_code == 2
-        assert "docker compose up -d" in out.stderr
+        assert "podman compose up -d" in out.stderr
 
 
 class TestForgetCommand:
@@ -165,7 +165,7 @@ class TestForgetCommand:
         with patch("munin.cli.main._forget", side_effect=MuninDBError("conn failed")):
             out = _RUNNER.invoke(app, ["forget", str(_ID), "--yes"])
         assert out.exit_code == 2
-        assert "docker compose up -d" in out.stderr
+        assert "podman compose up -d" in out.stderr
 
 
 class TestShowAfterForget:

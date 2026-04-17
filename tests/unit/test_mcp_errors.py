@@ -35,8 +35,8 @@ class TestErrorResponse:
     def test_with_hint(self) -> None:
         from munin.mcp.server import _error_response
 
-        r = _error_response("db_unreachable", "msg", hint="run docker compose up -d")
-        assert r["error"]["hint"] == "run docker compose up -d"
+        r = _error_response("db_unreachable", "msg", hint="run podman compose up -d")
+        assert r["error"]["hint"] == "run podman compose up -d"
 
     def test_without_hint_no_hint_key(self) -> None:
         from munin.mcp.server import _error_response
@@ -62,7 +62,7 @@ class TestRememberErrors:
 
         assert result["error"]["code"] == "db_unreachable"
         assert "hint" in result["error"]
-        assert "docker compose" in result["error"]["hint"]
+        assert "podman compose" in result["error"]["hint"]
 
     def test_embed_unreachable(self) -> None:
         with patch(

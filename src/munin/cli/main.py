@@ -40,7 +40,7 @@ def _handle_error(e: Exception) -> NoReturn:
     if isinstance(e, (MuninDBError, MuninEmbedError)):
         component = "database" if isinstance(e, MuninDBError) else "embed server"
         typer.echo(
-            f"Error: {component} unreachable: {e}\nHint: run `docker compose up -d`",
+            f"Error: {component} unreachable: {e}\nHint: run `podman compose up -d`",
             err=True,
         )
         raise typer.Exit(code=2)
@@ -646,14 +646,14 @@ def doctor(
 
     _checks: list[tuple[str, Callable[[], None], str]] = [
         ("config_loaded", _check_config_loaded, "check ~/.config/munin/config.toml"),
-        ("db_reachable", _check_db_reachable, "run `docker compose up -d`"),
+        ("db_reachable", _check_db_reachable, "run `podman compose up -d`"),
         ("schema_present", _check_schema_present, "apply `sql/*.sql`"),
         (
             "functions_present",
             _check_functions_present,
             "apply `sql/003_match_thoughts.sql` and `sql/004_upsert_thought.sql`",
         ),
-        ("embed_reachable", _check_embed_reachable, "run `docker compose up -d`"),
+        ("embed_reachable", _check_embed_reachable, "run `podman compose up -d`"),
         ("embed_dim_matches", _check_embed_dim_matches, "embed dim mismatch — check config"),
         (
             "log_dir_writable",
