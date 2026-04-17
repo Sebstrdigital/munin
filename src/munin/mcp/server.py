@@ -6,9 +6,11 @@ import functools
 import sys
 import traceback
 from collections.abc import Callable
+from pathlib import Path
 from typing import Any, TypeVar
 
 from mcp.server.fastmcp import FastMCP
+from mcp.types import TextContent
 
 import munin.core.memory as memory
 from munin.core.config import load as _load_config
@@ -178,6 +180,30 @@ def stats() -> dict[str, object]:
         "embed_server_reachable": embed_reachable,
         "db_reachable": db_reachable,
     }
+
+
+_PROMPTS_DIR = Path(__file__).parent / "prompts"
+
+
+@mcp.prompt(
+    name="session_start_context",
+    description="Instructions for recalling relevant prior thoughts at the start of a session.",
+)
+def session_start_context() -> list[TextContent]:
+    """Return the session-start context prompt, loaded fresh from disk on each call."""
+    template = (_PROMPTS_DIR / "session_start.md").read_text(encoding="utf-8")
+    prompt_text = template.replace("{project}", _project)
+    return [TextContent(type="text", text=prompt_text)]
+
+
+@mcp.prompt(
+    name="session_end_summary",
+    description="Instructions for saving session memory at the end of a coding session.",
+)
+def session_end_summary() -> list[TextContent]:
+    """Return the session-end memory prompt, loaded fresh from disk on each call."""
+    prompt_text = (_PROMPTS_DIR / "session_end.md").read_text(encoding="utf-8")
+    return [TextContent(type="text", text=prompt_text)]
 
 
 def main() -> None:

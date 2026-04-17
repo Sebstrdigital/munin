@@ -96,6 +96,18 @@ def recall(
                         created_at=row[7],
                     )
                 )
+
+            # Bump hit counters for every returned thought.
+            if results:
+                hit_ids = [r.id for r in results]
+                cur.execute(
+                    "UPDATE thoughts"
+                    " SET hit_count = hit_count + 1, last_hit_at = now()"
+                    " WHERE id = ANY(%s)",
+                    (hit_ids,),
+                )
+                logger.debug("recall: bumped hit_count for %d thoughts", len(hit_ids))
+
     return results
 
 
