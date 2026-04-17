@@ -24,31 +24,31 @@ curl -L -o models/nomic-embed-text-v1.5.Q4_K_M.gguf \
 
 ### 3. Start the services
 
-Using Docker:
-
-```bash
-docker compose up -d
-```
-
-Or Podman:
+Using Podman (recommended, rootless):
 
 ```bash
 podman compose up -d
 ```
 
+Or Docker:
+
+```bash
+docker compose up -d
+```
+
 Wait for both services to report as healthy:
 
 ```bash
-docker compose ps   # or: podman compose ps
+podman compose ps   # or: docker compose ps
 ```
 
 ### 4. Apply database migrations
 
 ```bash
-for f in sql/*.sql; do cat "$f" | docker exec -i munin-postgres psql -U munin -d munin; done
+for f in sql/*.sql; do cat "$f" | podman exec -i munin-postgres psql -U munin -d munin; done
 ```
 
-If using Podman, replace `docker exec` with `podman exec`.
+If using Docker, replace `podman exec` with `docker exec`.
 
 ### 5. Install the CLI
 
