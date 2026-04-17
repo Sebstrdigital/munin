@@ -694,3 +694,42 @@ def doctor(
                 console.print(f"[red]\u2717[/red] {name} \u2014 {err_hint}")
 
     raise typer.Exit(code=0 if all_passed else 1)
+
+
+_HOOK_PROMPTS_DIR = Path(__file__).parent.parent / "mcp" / "prompts"
+
+_VALID_EVENTS = ("session-end", "session-start")
+
+_EVENT_FILE_MAP: dict[str, str] = {
+    "session-end": "session_end.md",
+    "session-start": "session_start.md",
+}
+
+
+@app.command()
+def hook(
+    event: str = typer.Argument(..., help="Hook event name (e.g. session-end, session-start)."),
+) -> None:
+    """Print the instruction text for a named hook event and exit.
+
+    Reads markdown from the installed package — does not require the MCP
+    server to be running.  For shell-based harnesses that cannot speak MCP.
+    """
+    if event not in _VALID_EVENTS:
+        valid = ", ".join(_VALID_EVENTS)
+        typer.echo(
+            f"Error: unknown event '{event}'. Valid events: {valid}",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    prompt_file = _HOOK_PROMPTS_DIR / _EVENT_FILE_MAP[event]
+    template = prompt_file.read_text(encoding="utf-8")
+
+    if event == "session-start":
+        project = _current_project() or "unknown"
+        text = template.replace("{project}", project)
+    else:
+        text = template
+
+    typer.echo(text, nl=False)
