@@ -6,7 +6,7 @@ import uuid
 from collections.abc import Iterator
 from datetime import datetime, timezone
 from typing import Any
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock
 
 import pytest
 

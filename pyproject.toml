@@ -30,6 +30,9 @@ munin-mcp = "munin.mcp.server:main"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+"munin.mcp" = ["prompts/*.md"]
+
 [tool.ruff]
 line-length = 100
 

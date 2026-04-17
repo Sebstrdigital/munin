@@ -17,5 +17,6 @@ ALTER TABLE thoughts
 -- Index: fast lookup of cold records (hit_count = 0) for future compaction
 -- ---------------------------------------------------------------------------
 
-CREATE INDEX IF NOT EXISTS idx_thoughts_hit_count
-    ON thoughts (hit_count);
+CREATE INDEX IF NOT EXISTS idx_thoughts_cold
+    ON thoughts (last_hit_at)
+    WHERE hit_count = 0;
