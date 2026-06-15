@@ -11,12 +11,22 @@ from munin.core.errors import MuninConfigError
 
 _DEFAULT_CONFIG_PATH = Path.home() / ".config" / "munin" / "config.toml"
 
-_DEFAULTS: dict[str, str | int] = {
+_DEFAULTS: dict[str, str | int | float] = {
     "db_url": "postgresql://munin:munin@localhost:5433/munin",
     "embed_url": "http://localhost:8088",
     "embed_dim": 768,
     "default_limit": 10,
     "embed_batch_size": 32,
+    # Hybrid RRF ranking weights (US-003).
+    # w_rrf + w_recency + w_hits should sum to 1.0 (not enforced, just documented).
+    # w_rrf:     weight for fused RRF relevance signal (default 0.7)
+    # w_recency: weight for recency signal derived from last_hit_at / created_at (default 0.2)
+    # w_hits:    weight for normalised hit_count signal (default 0.1)
+    "recall_w_rrf": 0.7,
+    "recall_w_recency": 0.2,
+    "recall_w_hits": 0.1,
+    # RRF constant k — higher values reduce the influence of rank position (default 60)
+    "recall_rrf_k": 60,
 }
 
 _ENV_MAP: dict[str, str] = {
@@ -25,9 +35,14 @@ _ENV_MAP: dict[str, str] = {
     "embed_dim": "MUNIN_EMBED_DIM",
     "default_limit": "MUNIN_DEFAULT_LIMIT",
     "embed_batch_size": "MUNIN_EMBED_BATCH_SIZE",
+    "recall_w_rrf": "MUNIN_RECALL_W_RRF",
+    "recall_w_recency": "MUNIN_RECALL_W_RECENCY",
+    "recall_w_hits": "MUNIN_RECALL_W_HITS",
+    "recall_rrf_k": "MUNIN_RECALL_RRF_K",
 }
 
-_INT_FIELDS = {"embed_dim", "default_limit", "embed_batch_size"}
+_INT_FIELDS = {"embed_dim", "default_limit", "embed_batch_size", "recall_rrf_k"}
+_FLOAT_FIELDS = {"recall_w_rrf", "recall_w_recency", "recall_w_hits"}
 
 
 @dataclass
@@ -37,6 +52,11 @@ class MuninConfig:
     embed_dim: int
     default_limit: int
     embed_batch_size: int
+    # Hybrid recall ranking weights
+    recall_w_rrf: float = 0.7
+    recall_w_recency: float = 0.2
+    recall_w_hits: float = 0.1
+    recall_rrf_k: int = 60
 
 
 def load(config_path: Path | None = None) -> MuninConfig:
@@ -44,7 +64,7 @@ def load(config_path: Path | None = None) -> MuninConfig:
     path = config_path if config_path is not None else _DEFAULT_CONFIG_PATH
 
     # Start from defaults
-    resolved: dict[str, str | int] = dict(_DEFAULTS)
+    resolved: dict[str, str | int | float] = dict(_DEFAULTS)
 
     # Layer in TOML values
     if path.exists():
@@ -69,6 +89,13 @@ def load(config_path: Path | None = None) -> MuninConfig:
                     raise MuninConfigError(
                         f"Env var {env_var}={raw!r} is not a valid integer"
                     ) from exc
+            elif field in _FLOAT_FIELDS:
+                try:
+                    resolved[field] = float(raw)
+                except ValueError as exc:
+                    raise MuninConfigError(
+                        f"Env var {env_var}={raw!r} is not a valid float"
+                    ) from exc
             else:
                 resolved[field] = raw
 
@@ -78,4 +105,8 @@ def load(config_path: Path | None = None) -> MuninConfig:
         embed_dim=int(resolved["embed_dim"]),
         default_limit=int(resolved["default_limit"]),
         embed_batch_size=int(resolved["embed_batch_size"]),
+        recall_w_rrf=float(resolved["recall_w_rrf"]),
+        recall_w_recency=float(resolved["recall_w_recency"]),
+        recall_w_hits=float(resolved["recall_w_hits"]),
+        recall_rrf_k=int(resolved["recall_rrf_k"]),
     )

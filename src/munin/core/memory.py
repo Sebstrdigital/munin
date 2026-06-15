@@ -43,16 +43,26 @@ def recall(
 ) -> list[ThoughtResult]:
     """Return thoughts most similar to query, filtered by project and optional scope.
 
+    Uses hybrid Reciprocal Rank Fusion (RRF) combining a dense vector leg and a
+    lexical full-text leg, then applies multi-signal re-ranking that weighs
+    fused relevance, recency (last_hit_at / created_at), and hit_count.
+
+    Ranking weights and RRF constant are read from config (see MuninConfig):
+        recall_w_rrf      — weight for fused RRF relevance (default 0.7)
+        recall_w_recency  — weight for recency signal (default 0.2)
+        recall_w_hits     — weight for normalised hit_count (default 0.1)
+        recall_rrf_k      — RRF k constant (default 60)
+
     Args:
-        query: Natural-language query to embed and search against.
+        query: Natural-language query to embed (dense leg) and search (lexical leg).
         project: Project name to filter by. Resolved from git root if not provided.
         scope: Optional scope label to further restrict results.
         limit: Maximum number of results. Defaults to config.default_limit.
-        threshold: Minimum similarity score (0.0–1.0); results below are omitted.
+        threshold: Minimum cosine similarity for the dense leg (0.0–1.0).
         config: Optional config override; uses load() if not provided.
 
     Returns:
-        List of ThoughtResult ordered by descending similarity.
+        List of ThoughtResult ordered by descending hybrid score.
 
     Raises:
         MuninError: If project cannot be determined.
@@ -77,11 +87,41 @@ def recall(
     results: list[ThoughtResult] = []
     with pool.connection() as conn:
         with conn.cursor() as cur:
+            # Set HNSW query-time parameters for this transaction.
+            # SET LOCAL is scoped to the current transaction and is the correct
+            # mechanism for per-query ef_search / iterative_scan tuning (pgvector 0.8).
+            # These cannot be set inside the STABLE match_thoughts() function itself.
+            cur.execute("SET LOCAL hnsw.ef_search = 100")
+            cur.execute("SET LOCAL hnsw.iterative_scan = 'relaxed_order'")
+
             cur.execute(
                 "SELECT id, content, project, scope, tags, metadata,"
                 " similarity, created_at"
-                " FROM match_thoughts(%s::vector, %s, %s, %s, %s)",
-                (vec_str, resolved_project, scope, match_limit, threshold),
+                " FROM match_thoughts("
+                "   %s::vector,"   # query_embedding
+                "   %s,"           # query_text (lexical leg)
+                "   %s,"           # p_project
+                "   %s,"           # p_scope
+                "   %s,"           # match_limit
+                "   %s,"           # similarity_threshold
+                "   %s,"           # rrf_k
+                "   5,"            # candidate_factor (fixed at 5)
+                "   %s,"           # w_rrf
+                "   %s,"           # w_recency
+                "   %s"            # w_hits
+                ")",
+                (
+                    vec_str,
+                    query,
+                    resolved_project,
+                    scope,
+                    match_limit,
+                    threshold,
+                    cfg.recall_rrf_k,
+                    cfg.recall_w_rrf,
+                    cfg.recall_w_recency,
+                    cfg.recall_w_hits,
+                ),
             )
             for row in cur.fetchall():
                 results.append(

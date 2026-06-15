@@ -35,6 +35,11 @@ def cfg() -> MuninConfig:
         embed_dim=768,
         default_limit=10,
         embed_batch_size=32,
+        # Hybrid ranking weights (US-003 defaults)
+        recall_w_rrf=0.7,
+        recall_w_recency=0.2,
+        recall_w_hits=0.1,
+        recall_rrf_k=60,
     )
 
 
@@ -101,9 +106,13 @@ class TestHitCountBump:
 
         recall("query", config=cfg)
 
-        # cursor.execute is called twice: once for SELECT, once for UPDATE
-        assert cursor.execute.call_count == 2
-        update_call = cursor.execute.call_args_list[1]
+        # cursor.execute is called four times:
+        #   [0] SET LOCAL hnsw.ef_search
+        #   [1] SET LOCAL hnsw.iterative_scan
+        #   [2] SELECT ... FROM match_thoughts(...)
+        #   [3] UPDATE thoughts SET hit_count ...
+        assert cursor.execute.call_count == 4
+        update_call = cursor.execute.call_args_list[3]
         sql: str = update_call[0][0]
         params: tuple[Any, ...] = update_call[0][1]
 
@@ -132,7 +141,8 @@ class TestHitCountBump:
 
         recall("query", config=cfg)
 
-        update_call = cursor.execute.call_args_list[1]
+        # UPDATE is the 4th call (index 3): [SET LOCAL ef, SET LOCAL iter, SELECT, UPDATE]
+        update_call = cursor.execute.call_args_list[3]
         passed_ids: list[uuid.UUID] = update_call[0][1][0]
         assert set(passed_ids) == set(ids)
 
@@ -152,8 +162,8 @@ class TestHitCountBump:
 
         recall("query", config=cfg)
 
-        # Only one execute call (the SELECT); no UPDATE issued.
-        assert cursor.execute.call_count == 1
+        # Three execute calls (2x SET LOCAL + SELECT); no UPDATE when empty results.
+        assert cursor.execute.call_count == 3
 
     def test_new_thought_defaults(
         self,
@@ -212,5 +222,6 @@ class TestHitCountBump:
 
         recall("query", config=cfg)
 
-        update_sql: str = cursor.execute.call_args_list[1][0][0]
+        # UPDATE is the 4th call (index 3): [SET LOCAL ef, SET LOCAL iter, SELECT, UPDATE]
+        update_sql: str = cursor.execute.call_args_list[3][0][0]
         assert "superseded_by" not in update_sql

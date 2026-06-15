@@ -36,6 +36,11 @@ def cfg() -> MuninConfig:
         embed_dim=768,
         default_limit=10,
         embed_batch_size=32,
+        # Hybrid ranking weights (US-003 defaults)
+        recall_w_rrf=0.7,
+        recall_w_recency=0.2,
+        recall_w_hits=0.1,
+        recall_rrf_k=60,
     )
 
 
@@ -152,6 +157,33 @@ class TestRecallErrors:
 
 
 class TestRecallArguments:
+    # Helper: extract the match_thoughts execute call from cursor mock.
+    # recall() now issues 3 cursor.execute calls:
+    #   [0] SET LOCAL hnsw.ef_search = 100
+    #   [1] SET LOCAL hnsw.iterative_scan = 'relaxed_order'
+    #   [2] SELECT ... FROM match_thoughts(...)
+    # We always inspect call index 2 (the last call).
+    #
+    # Parameter order in the match_thoughts call tuple:
+    #   params[0] = query_embedding (vec_str)
+    #   params[1] = query_text
+    #   params[2] = p_project
+    #   params[3] = p_scope
+    #   params[4] = match_limit
+    #   params[5] = similarity_threshold
+    #   params[6] = rrf_k
+    #   params[7] = w_rrf
+    #   params[8] = w_recency
+    #   params[9] = w_hits
+
+    def _match_thoughts_call(self, cursor: MagicMock) -> tuple[str, tuple[Any, ...]]:
+        """Return (sql, params) for the match_thoughts SELECT call."""
+        assert cursor.execute.call_count == 3, (
+            f"Expected 3 execute calls (2x SET LOCAL + 1x SELECT), "
+            f"got {cursor.execute.call_count}"
+        )
+        return cursor.execute.call_args_list[2][0]  # type: ignore[return-value]
+
     def test_passes_scope_limit_threshold_to_cursor(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -167,13 +199,13 @@ class TestRecallArguments:
 
         recall("test query", scope="design", limit=5, threshold=0.7, config=cfg)
 
-        cursor.execute.assert_called_once()
-        sql, params = cursor.execute.call_args[0]
+        sql, params = self._match_thoughts_call(cursor)
         assert "match_thoughts" in sql
-        assert params[1] == "testproject"
-        assert params[2] == "design"
-        assert params[3] == 5
-        assert params[4] == 0.7
+        assert params[1] == "test query"   # query_text
+        assert params[2] == "testproject"  # p_project
+        assert params[3] == "design"       # p_scope
+        assert params[4] == 5              # match_limit
+        assert params[5] == 0.7            # similarity_threshold
 
     def test_uses_config_default_limit_when_limit_not_passed(
         self,
@@ -190,8 +222,8 @@ class TestRecallArguments:
 
         recall("query", config=cfg)
 
-        _, params = cursor.execute.call_args[0]
-        assert params[3] == cfg.default_limit  # 10
+        _, params = self._match_thoughts_call(cursor)
+        assert params[4] == cfg.default_limit  # match_limit = 10
 
     def test_explicit_project_skips_scope_detection(
         self,
@@ -213,8 +245,8 @@ class TestRecallArguments:
         recall("query", project="explicit-proj", config=cfg)
 
         assert not called, "current_project should not be called when project= is provided"
-        _, params = cursor.execute.call_args[0]
-        assert params[1] == "explicit-proj"
+        _, params = self._match_thoughts_call(cursor)
+        assert params[2] == "explicit-proj"  # p_project
 
     def test_scope_none_passes_none_to_cursor(
         self,
@@ -231,8 +263,52 @@ class TestRecallArguments:
 
         recall("query", config=cfg)  # no scope
 
-        _, params = cursor.execute.call_args[0]
-        assert params[2] is None
+        _, params = self._match_thoughts_call(cursor)
+        assert params[3] is None  # p_scope
+
+    def test_ranking_weights_passed_from_config(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        cfg: MuninConfig,
+    ) -> None:
+        """Ranking weights and rrf_k from config are forwarded to match_thoughts."""
+        from munin.core.memory import recall
+
+        monkeypatch.setattr("munin.core.memory.embed", lambda *a, **kw: [0.1] * 768)
+        monkeypatch.setattr(
+            "munin.core.memory._scope.current_project", lambda: "proj"
+        )
+        cursor = _mock_pool_with_rows(monkeypatch, [])
+
+        recall("query", config=cfg)
+
+        _, params = self._match_thoughts_call(cursor)
+        assert params[6] == cfg.recall_rrf_k        # rrf_k
+        assert params[7] == cfg.recall_w_rrf         # w_rrf
+        assert params[8] == cfg.recall_w_recency     # w_recency
+        assert params[9] == cfg.recall_w_hits        # w_hits
+
+    def test_hnsw_set_local_issued_before_select(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        cfg: MuninConfig,
+    ) -> None:
+        """The two HNSW SET LOCAL statements are issued before the SELECT."""
+        from munin.core.memory import recall
+
+        monkeypatch.setattr("munin.core.memory.embed", lambda *a, **kw: [0.1] * 768)
+        monkeypatch.setattr(
+            "munin.core.memory._scope.current_project", lambda: "proj"
+        )
+        cursor = _mock_pool_with_rows(monkeypatch, [])
+
+        recall("query", config=cfg)
+
+        calls = cursor.execute.call_args_list
+        assert len(calls) == 3
+        assert "hnsw.ef_search" in calls[0][0][0]
+        assert "hnsw.iterative_scan" in calls[1][0][0]
+        assert "match_thoughts" in calls[2][0][0]
 
 
 # ---------------------------------------------------------------------------
