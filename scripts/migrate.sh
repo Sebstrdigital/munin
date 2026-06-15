@@ -26,7 +26,7 @@ set -euo pipefail
 
 CONTAINER="munin-postgres"
 DB_USER="munin"
-DB_NAME="munin"
+DB_NAME="${MUNIN_PG_DB:-munin}"
 HOST_PORT="5433"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SQL_DIR="$(cd "${SCRIPT_DIR}/../sql" && pwd)"

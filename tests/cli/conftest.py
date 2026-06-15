@@ -15,8 +15,8 @@ from collections.abc import Generator
 
 import pytest
 
-# Point at the test stack.
-os.environ.setdefault("MUNIN_DB_URL", "postgresql://munin:munin@localhost:5433/munin")
+# Point at the test stack (munin_test DB — never the production munin DB).
+os.environ["MUNIN_DB_URL"] = "postgresql://munin:munin@localhost:5433/munin_test"
 os.environ.setdefault("MUNIN_EMBED_URL", "http://localhost:8088")
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))

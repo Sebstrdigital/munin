@@ -16,7 +16,7 @@ _DIM = 768
 
 def _make_cfg(batch_size: int = 32) -> MuninConfig:
     return MuninConfig(
-        db_url="postgresql://munin:munin@localhost:5433/munin",
+        db_url="postgresql://munin:munin@localhost:5433/munin_test",
         embed_url="http://embed-server",
         embed_dim=_DIM,
         default_limit=10,

@@ -12,7 +12,7 @@ from collections.abc import Generator
 import pytest
 
 # ── env setup (must happen before any munin import) ──────────────────────────
-os.environ["MUNIN_DB_URL"] = "postgresql://munin:munin@localhost:5433/munin"
+os.environ["MUNIN_DB_URL"] = "postgresql://munin:munin@localhost:5433/munin_test"
 os.environ["MUNIN_EMBED_URL"] = "http://localhost:8088"
 
 
@@ -60,5 +60,13 @@ def truncate_thoughts(cfg: MuninConfig) -> Generator[None, None, None]:
     pool = get_pool(cfg)
     with pool.connection() as conn:
         with conn.cursor() as cur:
+            cur.execute("SELECT current_database()")
+            row = cur.fetchone()
+            db_name = row[0] if row else "<unknown>"
+            if db_name != "munin_test":
+                raise RuntimeError(
+                    f"refusing to TRUNCATE non-test database {db_name!r} — "
+                    "set MUNIN_DB_URL to point at munin_test"
+                )
             cur.execute("TRUNCATE thoughts")
     yield

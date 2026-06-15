@@ -30,7 +30,7 @@ def clear_scope_cache() -> Iterator[None]:
 @pytest.fixture()
 def cfg() -> MuninConfig:
     return MuninConfig(
-        db_url="postgresql://munin:munin@localhost:5433/munin",
+        db_url="postgresql://munin:munin@localhost:5433/munin_test",
         embed_url="http://localhost:8088",
         embed_dim=768,
         default_limit=10,
