@@ -12,12 +12,9 @@ Covers:
 """
 from __future__ import annotations
 
-import psycopg
-
 from munin.core.config import MuninConfig
 from munin.core.db import get_pool
 from munin.core.memory import recall, remember
-
 
 # ---------------------------------------------------------------------------
 # Lexical leg: exact identifier recall

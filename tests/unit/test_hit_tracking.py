@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -12,7 +12,6 @@ import pytest
 
 from munin.core import scope as _scope
 from munin.core.config import MuninConfig
-
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -60,7 +59,7 @@ def _make_row(
     updated_at: datetime | None = None,
     fused_score: float = 0.9,
 ) -> tuple[Any, ...]:
-    ts = created_at or datetime(2024, 1, 1, tzinfo=timezone.utc)
+    ts = created_at or datetime(2024, 1, 1, tzinfo=UTC)
     return (
         row_id or uuid.uuid4(),
         content,

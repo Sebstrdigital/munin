@@ -1,7 +1,7 @@
 """Unit tests for core.ingest."""
 
 from pathlib import Path
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 from munin.core.ingest import IngestResult, _relativize, ingest
 
@@ -171,7 +171,7 @@ project = "proj"
 
 
 def test_unchanged_chunk_skipped(tmp_path: Path) -> None:
-    """SELECT returns matching fingerprint → embed NOT called → upsert NOT called → chunks_skipped=1.
+    """Matching fingerprint → embed NOT called, upsert NOT called, chunks_skipped=1.
 
     US-005: fingerprint check now runs BEFORE embed, so unchanged chunks make
     zero embedding HTTP calls.
@@ -227,7 +227,7 @@ project = "proj"
 
 
 def test_changed_chunk_updated(tmp_path: Path) -> None:
-    """SELECT returns different fingerprint → embed called → DELETE → upsert_thought → chunks_stored=1."""
+    """Different fingerprint → embed called → DELETE → upsert_thought, chunks_stored=1."""
     docs_dir = tmp_path / "docs"
     docs_dir.mkdir()
     (docs_dir / "note.md").write_text("# Hello\n\nUpdated content.")
@@ -276,7 +276,10 @@ def test_multi_chunk_batches_embed_calls(tmp_path: Path) -> None:
     from munin.core.chunker import chunk_markdown
 
     # Build a file that produces multiple chunks (each H2 heading = new chunk).
-    content = "# Doc\n\n## Section A\n\nContent A.\n\n## Section B\n\nContent B.\n\n## Section C\n\nContent C.\n"
+    content = (
+        "# Doc\n\n## Section A\n\nContent A.\n\n"
+        "## Section B\n\nContent B.\n\n## Section C\n\nContent C.\n"
+    )
     docs_dir = tmp_path / "docs"
     docs_dir.mkdir()
     (docs_dir / "multi.md").write_text(content)

@@ -15,7 +15,6 @@ from __future__ import annotations
 from munin.core.config import MuninConfig
 from munin.core.memory import recall, remember
 
-
 # ---------------------------------------------------------------------------
 # Near-duplicate suppression
 # ---------------------------------------------------------------------------

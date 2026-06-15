@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 from uuid import UUID
 
@@ -10,7 +10,7 @@ import pytest
 
 _FAKE_UUID = UUID("12345678-1234-5678-1234-567812345678")
 _FAKE_PROJECT = "munin"
-_NOW = datetime(2024, 1, 15, 12, 0, 0, tzinfo=timezone.utc)
+_NOW = datetime(2024, 1, 15, 12, 0, 0, tzinfo=UTC)
 
 
 @pytest.fixture(autouse=True)

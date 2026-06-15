@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -13,7 +13,6 @@ import pytest
 
 from munin.core import scope as _scope
 from munin.core.config import MuninConfig
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -63,7 +62,7 @@ def _make_row(
     # Columns must match the SELECT in memory.py:
     #   0: id, 1: content, 2: project, 3: scope, 4: tags, 5: metadata,
     #   6: similarity, 7: created_at, 8: updated_at, 9: score (fused)
-    ts = created_at or datetime(2024, 1, 1, tzinfo=timezone.utc)
+    ts = created_at or datetime(2024, 1, 1, tzinfo=UTC)
     return (
         row_id or uuid.uuid4(),
         content,
@@ -336,7 +335,7 @@ class TestRecallMapping:
         from munin.core.memory import ThoughtResult, recall
 
         row_id = uuid.uuid4()
-        created = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        created = datetime(2024, 6, 1, tzinfo=UTC)
         row = _make_row(
             row_id=row_id,
             content="auth decision content",

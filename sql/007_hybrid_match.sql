@@ -42,6 +42,16 @@ DROP FUNCTION IF EXISTS match_thoughts(
     vector, text, text, int, float
 );
 
+-- Also drop the 11-parameter signature if it already exists. Re-applying this
+-- migration onto a database whose match_thoughts already returns a different
+-- set of columns (e.g. one already at migration 009, which adds a `score`
+-- column) would otherwise fail with "cannot change return type of existing
+-- function" under CREATE OR REPLACE. Dropping first makes the whole 006-009
+-- migration chain safely re-runnable from any prior function shape.
+DROP FUNCTION IF EXISTS match_thoughts(
+    vector, text, text, text, int, float, int, int, float, float, float
+);
+
 -- ---------------------------------------------------------------------------
 -- Hybrid match_thoughts
 -- ---------------------------------------------------------------------------
