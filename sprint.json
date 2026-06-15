@@ -1,0 +1,144 @@
+{
+  "project": "munin",
+  "branchName": "takt/munin-phase2-3",
+  "description": "Phases 2 + 3 of the munin improvement plan (docs/proposals/munin-improvement-plan.md), run end-to-end in one autonomous pass. Phase 2 = memory lifecycle (semantic near-dup dedup on write, supersession via superseded_by, bi-temporal valid_from/valid_to) + a local bge-reranker-v2-m3 cross-encoder sidecar. Phase 3 = deterministic contextual embedding + embedding-model upgrade to EmbeddingGemma-300M, finished with one batched reindex. All external dependencies were pre-staged and load-validated attended on 2026-06-16 (see preStagedFacts) so this run needs NO network for models and NO interactive auth.",
+  "preStagedFacts": [
+    "Branch off main. Phase 1 is already merged to main (PR #3); sql/001..009 exist. ALL new migrations in this run MUST start at sql/010 — the plan doc's 006/007 numbers are STALE, do not reuse them.",
+    "Models are ALREADY downloaded into ./models/ (mounted -> /models in docker-compose.yml). DO NOT re-download: embeddinggemma-300M-Q8_0.gguf (P3-2 embed upgrade) and bge-reranker-v2-m3-Q8_0.gguf (P2-4 reranker).",
+    "EmbeddingGemma load-validated against the pinned image ghcr.io/ggml-org/llama.cpp:server: arch=gemma-embedding, n_embd=768 = EXACT drop-in for the current 768-dim schema (NO column/dim migration). Serve with the same flags as nomic: --embedding --pooling mean.",
+    "bge-reranker load-validated against the same image: arch=bert, serves with --reranking (which forces pooling type [4]=RANK, expected). Add a NEW compose service 'llama-rerank' on host port 8089, mounting the same ./models dir.",
+    "Test isolation is LIVE and must be respected: all DB tests run against the munin_test database (scripts/migrate.sh honours MUNIN_PG_DB). The autouse TRUNCATE fixture HARD-GUARDS on current_database()=='munin_test' and will RuntimeError against prod. NEVER point tests at the prod munin DB.",
+    "A pre-run backup already exists: backups/munin-pre-phase23-20260616-073311.dump (prod=4884 rows). The reindex story (P3-3) MUST still take its own FRESH pg_dump immediately before mutating prod vectors.",
+    "After this run merges, the stdio munin-mcp server must be respawned (session reload) to pick up the new memory.py — that is a human post-run step, NOT part of the run."
+  ],
+  "globalGuardrails": [
+    "Conventional Commits, subject <=50 chars.",
+    "ruff + mypy strict where practical; net-new lint must be 0 (pre-existing ~46 ruff errors + flaky test_returns_none_when_no_git are known debt, do not block on them).",
+    "Every schema change is an additive, re-runnable migration that DROPs the prior match_thoughts signature before recreating (follow the sql/007 pattern) so the 006->NNN chain replays from any function shape.",
+    "Row count is sacred: every migration and the reindex must preserve thoughts row count (assert before==after); zero rows lost.",
+    "Each lifecycle behaviour (dedup, supersession, bitemporal filtering) is feature-flagged in config with a safe default so it can be turned off without a redeploy.",
+    "Run the full pytest suite against munin_test after each story; report real output, never claim green without it."
+  ],
+  "userStories": [
+    {
+      "id": "P2-1",
+      "title": "Semantic near-duplicate detection + merge on write",
+      "description": "As the remember path, after embedding a new thought I want to ANN-check within the same project and, if the top hit is >= a conservative cosine threshold (~0.95), NOOP/merge instead of inserting a new row, so paraphrased duplicates stop crowding top-k.",
+      "acceptanceCriteria": [
+        "core/memory.py remember path performs an in-project ANN check post-embed and skips/merges when top similarity >= configurable threshold (default 0.95)",
+        "Threshold is configurable in core/config.py (e.g. remember_dedup_threshold) and a flag can disable the behaviour entirely (default on)",
+        "Re-remembering a reworded version of an existing fact creates NO new row (assert count unchanged) and logs the merge/skip with both ids",
+        "A genuinely new, dissimilar thought still inserts normally",
+        "Typecheck passes; full pytest against munin_test passes"
+      ],
+      "priority": 1,
+      "size": "small",
+      "complexity": "complex",
+      "dependsOn": [],
+      "knownIssues": ["False-merge risk — mitigate with the high threshold and by logging every merge so it is auditable/reversible."]
+    },
+    {
+      "id": "P2-2",
+      "title": "Supersession / conflict handling (wire up superseded_by)",
+      "description": "As recall, when a new thought conflicts with a near-duplicate older one, set old.superseded_by = new.id and exclude superseded rows from default recall, so recall stops returning two contradictory thoughts. Heuristic only (similarity + recency), no LLM.",
+      "acceptanceCriteria": [
+        "New migration sql/010_supersession.sql rewrites match_thoughts to add a WHERE superseded_by IS NULL filter (DROP prior signature first, re-runnable)",
+        "core/memory.py sets superseded_by on the retired row via the similarity+recency heuristic when a conflicting update arrives",
+        "Behaviour is feature-flagged in config (default on); superseded rows remain physically present and queryable when the filter is bypassed",
+        "Updating a decision retires the old row from default recall but it is still fetchable via show/by-id",
+        "Migration applies via scripts/migrate.sh with zero rows lost; typecheck + pytest against munin_test pass"
+      ],
+      "priority": 2,
+      "size": "small",
+      "complexity": "complex",
+      "dependsOn": ["P2-1"],
+      "knownIssues": ["Wrongly retiring a correct older fact — supersession is soft and reversible (column flip), never a delete."]
+    },
+    {
+      "id": "P2-3",
+      "title": "Bi-temporal validity (valid_from / valid_to)",
+      "description": "As the store, I want additive valid_from/valid_to columns for non-destructive supersession with queryable history, so staleness is captured without a graph engine. Recall defaults to valid_to IS NULL.",
+      "acceptanceCriteria": [
+        "New migration sql/011_bitemporal.sql adds valid_from (default now) and valid_to (nullable) columns and updates match_thoughts to default-filter valid_to IS NULL (DROP prior signature first, re-runnable)",
+        "When a thought is superseded (P2-2), its valid_to is set; default recall excludes it",
+        "A history-mode query path (config flag or explicit param) returns rows including those with valid_to set",
+        "Columns are additive only — existing embeddings untouched, zero rows lost",
+        "Typecheck + pytest against munin_test pass"
+      ],
+      "priority": 3,
+      "size": "small",
+      "complexity": "complex",
+      "dependsOn": ["P2-2"],
+      "knownIssues": ["Steal only the temporal PRIMITIVE from Zep/Graphiti — no graph store, no graph queries."]
+    },
+    {
+      "id": "P2-4",
+      "title": "Local cross-encoder reranker sidecar (bge-reranker-v2-m3)",
+      "description": "As recall, I want a local cross-encoder to re-score the top-50 hybrid candidates as (query, doc) pairs and keep the top-8, slotting between RRF fusion and the MMR pass, feature-flagged off-by-default-safe.",
+      "acceptanceCriteria": [
+        "docker-compose.yml gains a 'llama-rerank' service using ghcr.io/ggml-org/llama.cpp:server with --model /models/bge-reranker-v2-m3-Q8_0.gguf --reranking, host port 8089, same ./models mount, healthcheck mirroring llama-embed",
+        "core/memory.py adds a rerank stage between RRF fusion and MMR that POSTs candidates to the reranker /reranking endpoint and reorders by score",
+        "Reranker is feature-flagged in core/config.py (e.g. recall_rerank_enabled + endpoint URL); flag OFF = exact previous behaviour (no-op), flag ON = reranked order",
+        "Reranker endpoint/model is read from config, NOT hardcoded; failure to reach the sidecar degrades gracefully to hybrid-only with a logged warning (never crashes recall)",
+        "With rerank on, a held-out query where the right thought sits outside hybrid top-1 is lifted to top-1 in a test",
+        "Typecheck + pytest against munin_test pass"
+      ],
+      "priority": 4,
+      "size": "medium",
+      "complexity": "complex",
+      "dependsOn": [],
+      "knownIssues": ["Model is already staged at ./models/bge-reranker-v2-m3-Q8_0.gguf and load-validated — do NOT download. Bounded latency, only on recall."]
+    },
+    {
+      "id": "P3-1",
+      "title": "Deterministic contextual embedding",
+      "description": "As ingest/remember, I want to prepend existing metadata (project / scope / tags / heading) to content BEFORE embedding so the vector carries section/source context, storing the raw content separately from the embedded text. Heading is currently stored but not embedded.",
+      "acceptanceCriteria": [
+        "core/ingest.py + core/embed.py prepend a deterministic context prefix (project, scope, tags, heading) to the text sent to the embedder",
+        "Raw content is preserved unchanged for display/return; only the embedded representation includes the prefix (add an embedded_text column via sql/012 if needed to keep raw and embedded text distinct)",
+        "Prefix construction is deterministic and unit-tested (same input -> same prefixed string), with NO LLM call",
+        "This story lands the code path but the actual re-embed of existing rows is performed by P3-3 (depends on reindex)",
+        "Typecheck + pytest against munin_test pass"
+      ],
+      "priority": 5,
+      "size": "small",
+      "complexity": "complex",
+      "dependsOn": ["P2-3"],
+      "knownIssues": ["Takes effect on existing rows only after the P3-3 reindex. New writes carry context immediately."]
+    },
+    {
+      "id": "P3-2",
+      "title": "Embedding model upgrade to EmbeddingGemma-300M",
+      "description": "As the embed layer, swap nomic-embed-text-v1.5 for EmbeddingGemma-300M (768-dim, mean pooling = near drop-in). The GGUF is already staged and validated as n_embd=768, so no schema/dim or pooling-code change is required.",
+      "acceptanceCriteria": [
+        "docker-compose.yml llama-embed service points at /models/embeddinggemma-300M-Q8_0.gguf, keeping --embedding --pooling mean",
+        "Stack comes up healthy and /embedding returns 768-dim vectors for a probe string (assert length==768)",
+        "No changes to vector column dimension or pooling/normalize code are needed (confirm in the diff); if any embed.py normalize tweak IS required for Gemma, it is explicitly justified in the commit body",
+        "A recall sanity check returns sensible results post-swap (before the full reindex, new/probe embeddings are Gemma; old rows reindex in P3-3)",
+        "Typecheck + pytest against munin_test pass"
+      ],
+      "priority": 6,
+      "size": "medium",
+      "complexity": "complex",
+      "dependsOn": ["P2-3"],
+      "knownIssues": ["Model already staged at ./models/embeddinggemma-300M-Q8_0.gguf (public ggml-org GGUF, no auth). Gemma license is permissive for this use; note it in the README/decisions if surfacing."]
+    },
+    {
+      "id": "P3-3",
+      "title": "One-pass reindex (new model + contextual prefix)",
+      "description": "As an operator, I want a single re-embed pass over all thoughts through EmbeddingGemma + the P3-1 contextual prefix, rebuilding the HNSW index, run once. Pay the cost once.",
+      "acceptanceCriteria": [
+        "A new scripts/reindex.py (or `munin reindex` CLI verb) re-embeds every thought via the new model + contextual prefix and rebuilds the HNSW index",
+        "The script takes a FRESH pg_dump (-Fc) into backups/ before mutating any vector and aborts if the dump fails",
+        "Row count is identical before and after (assert), every embedding is non-null post-run, and the script is idempotent/re-runnable",
+        "Bumps maintenance_work_mem + parallel workers for the one-off HNSW build, then restores defaults",
+        "Post-reindex recall sanity set passes (a curated set of query->expected-thought checks); typecheck + pytest against munin_test pass"
+      ],
+      "priority": 7,
+      "size": "medium",
+      "complexity": "complex",
+      "dependsOn": ["P3-1", "P3-2"],
+      "knownIssues": ["This is the only destructive-to-vectors step. Backup-before-mutate is non-negotiable. Runs against prod munin (not munin_test) — guarded by the fresh pg_dump."]
+    }
+  ]
+}
