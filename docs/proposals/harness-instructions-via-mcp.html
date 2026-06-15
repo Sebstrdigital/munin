@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<title>Harness instructions via munin MCP</title>
+<style>
+  :root {
+    --bg: #fafaf8;
+    --fg: #1a1a1a;
+    --muted: #666;
+    --border: #e0e0dc;
+    --accent: #2a5a9a;
+    --code-bg: #f2f1ec;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1a1a1a;
+      --fg: #e8e8e4;
+      --muted: #999;
+      --border: #333;
+      --accent: #7aa8d8;
+      --code-bg: #252525;
+    }
+  }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    max-width: 820px;
+    margin: 3rem auto;
+    padding: 0 1.5rem;
+    background: var(--bg);
+    color: var(--fg);
+    line-height: 1.65;
+    font-size: 16px;
+  }
+  h1, h2, h3 { line-height: 1.25; margin-top: 2.2rem; }
+  h1 { font-size: 1.9rem; border-bottom: 1px solid var(--border); padding-bottom: 0.6rem; }
+  h2 { font-size: 1.4rem; color: var(--accent); }
+  h3 { font-size: 1.1rem; }
+  hr { border: none; border-top: 1px solid var(--border); margin: 2.5rem 0; }
+  code {
+    background: var(--code-bg);
+    padding: 0.1em 0.35em;
+    border-radius: 3px;
+    font-size: 0.9em;
+    font-family: "SF Mono", Menlo, Consolas, monospace;
+  }
+  pre {
+    background: var(--code-bg);
+    padding: 1rem;
+    border-radius: 6px;
+    overflow-x: auto;
+    font-size: 0.85rem;
+    line-height: 1.5;
+  }
+  pre code { background: none; padding: 0; }
+  blockquote {
+    border-left: 3px solid var(--accent);
+    margin: 1rem 0;
+    padding: 0.2rem 1rem;
+    color: var(--muted);
+    font-style: italic;
+  }
+  table {
+    border-collapse: collapse;
+    width: 100%;
+    margin: 1rem 0;
+    font-size: 0.93rem;
+  }
+  th, td {
+    border: 1px solid var(--border);
+    padding: 0.5rem 0.75rem;
+    text-align: left;
+    vertical-align: top;
+  }
+  th { background: var(--code-bg); font-weight: 600; }
+  ul, ol { padding-left: 1.5rem; }
+  li { margin: 0.3rem 0; }
+  .status { color: var(--muted); font-size: 0.95rem; }
+  a { color: var(--accent); }
+</style>
+</head>
+<body>
+
+<h1>Harness instructions via munin MCP</h1>
+
+<p class="status"><strong>Status:</strong> Proposal — carried over from OdelEnergy session 2026-04-17<br>
+<strong>Goal:</strong> Stop asking agents to manually "update munin". Have agents pull instructions <em>from</em> munin so the same behavior works across every harness (Claude Code, Cursor, Codex, custom agents).</p>
+
+<hr>
+
+<h2>Problem</h2>
+<p>Today the user types "update munin" at end of useful sessions. Works, but:</p>
+<ul>
+  <li>Relies on user remembering</li>
+  <li>Coupled to Claude Code only</li>
+  <li>Behavior duplicated if we write it as hardcoded hooks in each harness</li>
+</ul>
+<p>Hardcoding a <code>SessionEnd</code> hook per harness works but creates drift. Instructions evolve — we want one source of truth.</p>
+
+<h2>Proposed architecture</h2>
+<p>Expose prompts + resources from the munin MCP server. Any harness with a generic "fetch prompt, run it" hook can plug in.</p>
+
+<h3>New MCP primitives on munin</h3>
+<table>
+  <thead><tr><th>Primitive</th><th>Name</th><th>Purpose</th></tr></thead>
+  <tbody>
+    <tr><td>Prompt</td><td><code>session_end_summary</code></td><td>Returns an LLM prompt that asks the model to review the session and emit 0–3 munin thoughts. Model then calls <code>munin remember</code> with each.</td></tr>
+    <tr><td>Prompt</td><td><code>session_start_context</code> (optional)</td><td>Returns a prompt that instructs the model to call <code>recall</code> with relevant queries based on the current project + cwd before starting work.</td></tr>
+    <tr><td>Resource</td><td><code>munin://instructions/session-end</code></td><td>Plain-text fallback for harnesses that can't read MCP prompts.</td></tr>
+    <tr><td>Resource</td><td><code>munin://instructions/cadence</code></td><td>Defines when the harness should call each primitive (session-start, session-end, milestone).</td></tr>
+  </tbody>
+</table>
+
+<h3>Why prompts over tools</h3>
+<p>Tools = the agent decides when to call. Prompts = the harness (hook) injects a specific instruction block. We want the latter for lifecycle triggers — it's deterministic, not left to the model.</p>
+
+<h3>Curation-preserving summary</h3>
+<p>The <code>session_end_summary</code> prompt must enforce the filter from <code>~/.claude/CLAUDE.md</code> "What NOT to save":</p>
+<blockquote>Code patterns, file paths, git history, debugging solutions, ephemeral task state — DO NOT save. Only save: user facts, feedback rules, project state with <em>why</em>, references. Cap: 3 thoughts per session. If nothing qualifies, save zero.</blockquote>
+<p>That keeps munin curated even when automated.</p>
+
+<hr>
+
+<h2>Lifecycle — when each call fires</h2>
+
+<pre><code>┌──────────────────────────────────────────────────────────────────┐
+│                       HARNESS LIFECYCLE                          │
+└──────────────────────────────────────────────────────────────────┘
+
+[SessionStart]
+    │
+    │ (harness hook)
+    ▼
+┌─────────────────────────────────┐
+│ mcp.getPrompt(                  │      ──► returns instruction:
+│   "session_start_context")      │          "call recall() with
+│                                 │           these queries: …"
+└─────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────┐
+│ mcp.callTool("recall",          │      ──► vector search, top-k
+│   query="…", project=auto)      │          thoughts injected
+└─────────────────────────────────┘
+    │
+    ▼
+──────────── [Session active] ────────────
+    │
+    │ ad-hoc during work:
+    ▼
+┌─────────────────────────────────┐
+│ mcp.callTool("recall", …)       │      ◄─ model decides
+│ mcp.callTool("remember", …)     │      ◄─ model decides (user
+│                                 │          said "remember X" OR
+│                                 │          non-obvious decision)
+└─────────────────────────────────┘
+    │
+    ▼
+[Milestone events — optional]
+    │
+    │ (harness hook, e.g. PostCommit, PostPRMerged)
+    ▼
+┌─────────────────────────────────┐
+│ mcp.getPrompt(                  │
+│   "milestone_summary",          │      ──► 0–1 thought
+│   event="pr_merged")            │
+└─────────────────────────────────┘
+    │
+    ▼
+[SessionEnd]
+    │
+    │ (harness hook)
+    ▼
+┌─────────────────────────────────┐
+│ mcp.getPrompt(                  │      ──► instruction:
+│   "session_end_summary")        │          "review transcript,
+│                                 │           emit 0–3 thoughts"
+└─────────────────────────────────┘
+    │
+    ▼
+┌─────────────────────────────────┐
+│ Model produces 0–3              │
+│ mcp.callTool("remember", …)     │      ──► written to DB
+└─────────────────────────────────┘
+    │
+    ▼
+[Background — optional, cron-style]
+    │
+    ▼
+┌─────────────────────────────────┐
+│ munin compact / review          │      ──► merges or deprecates
+│ (scheduled, server-side,        │          stale thoughts;
+│  not harness-driven)            │          "supersedes" links
+└─────────────────────────────────┘
+</code></pre>
+
+<h3>Call taxonomy (GET / UPDATE / POST mental model)</h3>
+<table>
+  <thead><tr><th>Intent</th><th>MCP primitive</th><th>Example</th></tr></thead>
+  <tbody>
+    <tr><td>GET context</td><td><code>callTool("recall", …)</code></td><td>"what do we know about OdelEnergy?"</td></tr>
+    <tr><td>GET instructions</td><td><code>getPrompt(name)</code></td><td>session-end behavior</td></tr>
+    <tr><td>POST thought</td><td><code>callTool("remember", …)</code></td><td>save decision</td></tr>
+    <tr><td>UPDATE / DELETE</td><td><code>callTool("forget", id)</code> + re-remember, or server-side compact</td><td>supersede stale</td></tr>
+    <tr><td>INTROSPECT</td><td><code>callTool("list_projects" / "stats")</code></td><td>dashboards</td></tr>
+  </tbody>
+</table>
+
+<hr>
+
+<h2>Bloat concerns — revisited</h2>
+<p>Earlier Slack thread: should we auto-write everything to munin?</p>
+<p><strong>No.</strong> Munin value is <em>signal-to-noise on recall</em>. Auto-dumping defeats curation. Mitigations baked into this proposal:</p>
+<ol>
+  <li><code>session_end_summary</code> caps at 3 thoughts, with explicit "what NOT to save" filter.</li>
+  <li>Harness invokes the prompt; model does the filtering. Same brain that writes is the brain that judges.</li>
+  <li>Server-side compaction stays manual/scheduled, not session-triggered. Only revisit if <code>recall</code> noise gets high.</li>
+</ol>
+<p>Scheduled compaction (cron) can:</p>
+<ul>
+  <li>Flag thoughts with <code>hit_count = 0</code> after N days → candidate for deletion</li>
+  <li>Cluster near-duplicates (cosine similarity &gt; 0.9 within same project) → merge with supersedes link</li>
+  <li>Never delete automatically — always propose, let human approve</li>
+</ul>
+
+<hr>
+
+<h2>Implementation sketch</h2>
+
+<h3>munin side (this repo)</h3>
+<ol>
+  <li>Add <code>prompts/</code> module under <code>src/munin/mcp/</code>.</li>
+  <li>Register prompts with FastMCP:
+<pre><code>@mcp.prompt()
+def session_end_summary() -&gt; str:
+    return Path("prompts/session_end.md").read_text()
+</code></pre>
+  </li>
+  <li>Markdown files under <code>src/munin/mcp/prompts/</code> are the editable source of truth.</li>
+  <li>Add migration 00X for <code>hit_count</code>, <code>last_hit_at</code>, <code>superseded_by</code> columns on <code>thoughts</code> (compaction support).</li>
+</ol>
+
+<h3>Claude Code side (one-time setup, then portable)</h3>
+<p><code>~/.claude/settings.json</code>:</p>
+<pre><code>{
+  "hooks": {
+    "SessionEnd": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "mcp_prompt",
+        "server": "munin",
+        "prompt": "session_end_summary"
+      }]
+    }],
+    "SessionStart": [{
+      "matcher": "",
+      "hooks": [{
+        "type": "mcp_prompt",
+        "server": "munin",
+        "prompt": "session_start_context"
+      }]
+    }]
+  }
+}
+</code></pre>
+<p>Note: <code>type: "mcp_prompt"</code> does not exist in Claude Code yet. If unavailable, fall back to <code>type: "command"</code> that shells out to a small script (<code>munin hook session-end</code>) which the munin CLI implements — reads the prompt from the MCP server and stdouts it back.</p>
+
+<hr>
+
+<h2>Open questions</h2>
+<ol>
+  <li>Does Claude Code support <code>mcp_prompt</code> as a hook type? If not, add a CLI shim <code>munin hook {event}</code> that fetches the prompt and prints it — harness just runs that.</li>
+  <li>Milestone triggers — useful or noise? Start without them, add only if sessions regularly go long enough to lose context before <code>SessionEnd</code>.</li>
+  <li>Should <code>session_start_context</code> auto-fire <code>recall</code> queries, or just suggest them and let the model decide? Suggest first — agent autonomy preserved, token cost controlled.</li>
+  <li>Versioning of prompts — ship them in the repo, tag migrations with version, let server pick based on client capability.</li>
+</ol>
+
+<hr>
+
+<h2>Next steps (when we resume in munin)</h2>
+<ol>
+  <li>Spike <code>session_end_summary</code> prompt as a markdown file + FastMCP wiring. Test from Claude Code.</li>
+  <li>Build <code>munin hook {event}</code> CLI shim as fallback for harnesses without native MCP prompt hooks.</li>
+  <li>Add <code>hit_count</code> + <code>superseded_by</code> schema migration (foundation for compaction).</li>
+  <li>Write a small evaluation: one week with automated <code>SessionEnd</code>, compare munin growth rate and recall relevance before/after.</li>
+</ol>
+
+<hr>
+
+<h2>Related context from OdelEnergy session</h2>
+<ul>
+  <li>Proposal PDF finalized, committed in <code>dua-tools</code> (<code>1036297</code>).</li>
+  <li>4 manual <code>munin remember</code> calls made at end of that session — exactly the use case we're automating here.</li>
+  <li><code>duadigital-pdf-maker</code> skill now has a <code>FORMAT.md</code> review step; same pattern (server-side instructions) could apply to munin prompts.</li>
+</ul>
+
+</body>
+</html>
