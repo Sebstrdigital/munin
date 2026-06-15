@@ -57,7 +57,10 @@ def _make_row(
     metadata: dict[str, Any] | None = None,
     similarity: float = 0.9,
     created_at: datetime | None = None,
+    updated_at: datetime | None = None,
+    fused_score: float = 0.9,
 ) -> tuple[Any, ...]:
+    ts = created_at or datetime(2024, 1, 1, tzinfo=timezone.utc)
     return (
         row_id or uuid.uuid4(),
         content,
@@ -66,7 +69,9 @@ def _make_row(
         tags or [],
         metadata or {},
         similarity,
-        created_at or datetime(2024, 1, 1, tzinfo=timezone.utc),
+        ts,
+        updated_at or ts,
+        fused_score,
     )
 
 

@@ -87,50 +87,71 @@ def test_mmr_suppresses_near_duplicates(cfg: MuninConfig) -> None:
 # ---------------------------------------------------------------------------
 
 def test_mmr_disabled_returns_fused_order(cfg: MuninConfig) -> None:
-    """When recall_mmr_enabled=False, both calls must return the same result set
-    (no MMR re-ordering applied, and no results dropped or added between calls).
+    """MMR-disabled recall must return exactly the top-N by fused score.
 
-    Note: we assert SET equality rather than ordered equality because recall()
-    bumps hit_count/last_hit_at on returned rows, which legitimately shifts the
-    w_hits/w_recency components of the score and can change rank between two
-    identical calls.  The meaningful invariant is that MMR-disabled recall
-    returns the same fused candidate set — not a fixed order.
+    Uses 8 thoughts but requests only limit=4, so the assertion exercises
+    which candidates survive — not just that all thoughts are returned.  The
+    top-4 by fused score (fused_score field) must match the 4 returned IDs.
+
+    Note: we assert on the FIRST call only (before hit_count is bumped) so
+    that recency/hits tie-breaking does not invalidate the fused-score order.
     """
     proj = "pytest_mmr_disabled"
 
+    # Eight distinct thoughts — more than the limit so selection is non-trivial.
     thoughts = [
         "munin stores thoughts in a Postgres database with pgvector",
         "llama.cpp serves the embedding model for munin",
         "the munin CLI exposes remember and recall commands",
         "munin uses Reciprocal Rank Fusion for hybrid retrieval",
+        "pgvector enables cosine similarity search in PostgreSQL",
+        "FastAPI is a modern Python web framework",
+        "Astro is a static site generator for the web",
+        "SQLAlchemy is a Python ORM for relational databases",
     ]
     for t in thoughts:
         remember(t, project=proj, config=cfg)
 
-    # Reference: fetch with MMR disabled — this is the pure fused result set.
+    # Pure-RRF weights (no recency/hits) so ranking has no state feedback:
+    # recall() bumps hit_count/last_hit_at, which would otherwise perturb the
+    # fused score between the limit=8 and limit=4 calls and make the comparison
+    # non-deterministic. With w_recency=w_hits=0 the fused score == normalised RRF,
+    # which is stable across calls.
     no_mmr_cfg = MuninConfig(
         db_url=cfg.db_url,
         embed_url=cfg.embed_url,
         embed_dim=cfg.embed_dim,
         default_limit=cfg.default_limit,
         embed_batch_size=cfg.embed_batch_size,
+        recall_w_rrf=1.0,
+        recall_w_recency=0.0,
+        recall_w_hits=0.0,
         recall_mmr_enabled=False,
     )
-    no_mmr_results = recall(
+
+    # Fetch all 8 candidates (no limit cap) to know the true fused ranking.
+    all_results = recall(
+        "munin memory retrieval", project=proj, limit=8, config=no_mmr_cfg
+    )
+    assert len(all_results) == 8, f"Expected 8 results, got {len(all_results)}"
+
+    # The top-4 by fused_score from the full set should match limit=4 recall.
+    top4_ids = {r.id for r in sorted(all_results, key=lambda r: r.fused_score, reverse=True)[:4]}
+
+    # Second call with limit=4 — MMR is off so it must be a fused-score top-4 slice.
+    # (hit_count was bumped for all 8 by the first call, so recency/hits are uniform
+    # across candidates; fused_score ordering is stable.)
+    limited_results = recall(
         "munin memory retrieval", project=proj, limit=4, config=no_mmr_cfg
     )
 
-    # Fetch again (hit_count/last_hit_at were bumped, which can shift order).
-    no_mmr_results2 = recall(
-        "munin memory retrieval", project=proj, limit=4, config=no_mmr_cfg
+    assert len(limited_results) == 4, (
+        f"Expected 4 results with limit=4, got {len(limited_results)}"
     )
-
-    assert len(no_mmr_results) == len(no_mmr_results2), (
-        "MMR-disabled recall should return the same number of results each call"
-    )
-    assert set(r.id for r in no_mmr_results) == set(r.id for r in no_mmr_results2), (
-        "MMR-disabled recall should return the same result set across calls "
-        "(order may vary due to hit_count tie-breaks)"
+    returned_ids = {r.id for r in limited_results}
+    assert returned_ids == top4_ids, (
+        "MMR-disabled recall(limit=4) must return the top-4 by fused score. "
+        f"Expected IDs: {top4_ids}, got: {returned_ids}"
     )
 
 

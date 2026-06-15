@@ -37,6 +37,7 @@ def _result(
         tags=tags or [],
         metadata={},
         similarity=similarity,
+        fused_score=0.75,
         created_at=_TS,
     )
 

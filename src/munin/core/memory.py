@@ -44,12 +44,15 @@ def _mmr_rerank(
     Selects *k* items iteratively.  Each step picks the candidate that maximises:
         lambda_ * relevance_score  -  (1 - lambda_) * max_similarity_to_selected
 
-    relevance_score is taken from ThoughtResult.similarity (the fused hybrid
-    score already computed by the RPC).  Pairwise similarity is computed as
-    cosine distance over the raw embedding vectors.
+    relevance_score is taken from ThoughtResult.fused_score — the multi-signal
+    weighted blend of RRF rank, recency, and hit_count returned by the
+    match_thoughts() RPC (column `score`).  Using the fused score ensures MMR
+    trades diversity against the same ranking signal that determines candidate
+    order, not just raw cosine.  Pairwise similarity for the diversity term is
+    computed as cosine distance over the raw embedding vectors.
 
     Args:
-        candidates: Fused-ranked candidates (ordered by descending hybrid score).
+        candidates: Fused-ranked candidates (ordered by descending fused score).
         embeddings: Map of thought id → raw embedding vector (768-dim).
         lambda_:    Trade-off weight — 1.0 = pure relevance, 0.0 = pure diversity.
         k:          Number of results to select (≤ len(candidates)).
@@ -60,9 +63,10 @@ def _mmr_rerank(
     if not candidates or k <= 0:
         return []
 
-    # Normalise relevance scores to [0, 1] so they are on the same scale as cosine.
-    max_score = max(c.similarity for c in candidates) or 1.0
-    rel: dict[UUID, float] = {c.id: c.similarity / max_score for c in candidates}
+    # Normalise fused relevance scores to [0, 1] so they are on the same scale
+    # as cosine similarity used for the diversity term.
+    max_score = max(c.fused_score for c in candidates) or 1.0
+    rel: dict[UUID, float] = {c.id: c.fused_score / max_score for c in candidates}
 
     remaining = list(candidates)
     selected: list[ThoughtResult] = []
@@ -92,7 +96,17 @@ def _mmr_rerank(
 
 @dataclass
 class ThoughtResult:
-    """A single recalled thought with its similarity score."""
+    """A single recalled thought with its similarity score.
+
+    Attributes:
+        similarity:  Raw cosine similarity between the query embedding and the
+                     thought embedding.  Preserved for backward-compatible display
+                     and CLI output.
+        fused_score: Multi-signal final score from match_thoughts() — weighted
+                     blend of RRF rank fusion, recency (last_hit_at), and
+                     hit_count.  This is the authoritative ranking signal; MMR
+                     re-ranking uses this value as its relevance term.
+    """
 
     id: UUID
     content: str
@@ -101,6 +115,7 @@ class ThoughtResult:
     tags: list[str]
     metadata: dict[str, Any]
     similarity: float
+    fused_score: float
     created_at: datetime
 
 
@@ -189,7 +204,7 @@ def recall(
 
             cur.execute(
                 "SELECT id, content, project, scope, tags, metadata,"
-                " similarity, created_at"
+                " similarity, created_at, updated_at, score"
                 " FROM match_thoughts("
                 "   %s::vector,"   # query_embedding
                 "   %s,"           # query_text (lexical leg)
@@ -226,6 +241,7 @@ def recall(
                         tags=list(row[4]) if row[4] else [],
                         metadata=dict(row[5]) if row[5] else {},
                         similarity=float(row[6]),
+                        fused_score=float(row[9]),
                         created_at=row[7],
                     )
                 )

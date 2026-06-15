@@ -58,7 +58,12 @@ def _make_row(
     metadata: dict[str, Any] | None = None,
     similarity: float = 0.9,
     created_at: datetime | None = None,
+    fused_score: float = 0.75,
 ) -> tuple[Any, ...]:
+    # Columns must match the SELECT in memory.py:
+    #   0: id, 1: content, 2: project, 3: scope, 4: tags, 5: metadata,
+    #   6: similarity, 7: created_at, 8: updated_at, 9: score (fused)
+    ts = created_at or datetime(2024, 1, 1, tzinfo=timezone.utc)
     return (
         row_id or uuid.uuid4(),
         content,
@@ -67,7 +72,9 @@ def _make_row(
         tags or [],
         metadata or {},
         similarity,
-        created_at or datetime(2024, 1, 1, tzinfo=timezone.utc),
+        ts,
+        ts,           # updated_at (row[8])
+        fused_score,  # score / fused_score (row[9])
     )
 
 
@@ -339,6 +346,7 @@ class TestRecallMapping:
             metadata={"source": "slack"},
             similarity=0.87,
             created_at=created,
+            fused_score=0.72,
         )
 
         monkeypatch.setattr("munin.core.memory.embed", lambda *a, **kw: [0.1] * 768)
@@ -359,6 +367,7 @@ class TestRecallMapping:
         assert r.tags == ["auth", "security"]
         assert r.metadata == {"source": "slack"}
         assert r.similarity == pytest.approx(0.87)
+        assert r.fused_score == pytest.approx(0.72)
         assert r.created_at == created
 
     def test_empty_tags_and_metadata_become_empty_collections(

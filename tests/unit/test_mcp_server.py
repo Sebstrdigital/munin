@@ -82,6 +82,7 @@ class TestRecallTool:
             tags=["tag1"],
             metadata={},
             similarity=0.9,
+            fused_score=0.75,
             created_at=_NOW,
         )
 
