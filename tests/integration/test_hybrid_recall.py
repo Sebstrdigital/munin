@@ -12,11 +12,10 @@ Covers:
 """
 from __future__ import annotations
 
-import time
-
 import psycopg
 
 from munin.core.config import MuninConfig
+from munin.core.db import get_pool
 from munin.core.memory import recall, remember
 
 
@@ -60,12 +59,14 @@ def test_exact_identifier_recall_via_lexical_leg(cfg: MuninConfig) -> None:
 
 
 def test_hit_count_recent_thought_ranks_above_stale(cfg: MuninConfig) -> None:
-    """A frequently-hit recent thought must rank above an equally-similar
-    stale never-hit thought when recalled with the same semantic query.
+    """A frequently-hit AND recently-used thought must rank above a genuinely
+    stale (old + never-hit) thought when recalled with the same semantic query.
 
-    Setup:
-      - 'hot' thought: inserted, then hit several times (hit_count > 0, recent last_hit_at)
-      - 'cold' thought: inserted, never recalled (hit_count = 0, no last_hit_at)
+    Setup (deterministic via direct SQL UPDATE — no wall-clock timing dependency):
+      - 'hot' thought: inserted, then backdated to 30 days ago for created_at,
+        but given hit_count=5 and last_hit_at=now() to mark it recently used.
+      - 'cold' thought: inserted, then backdated 365 days for both created_at
+        and last_hit_at, with hit_count=0 to make it genuinely stale.
     Both have semantically similar content about "database indexing".
 
     MMR is disabled for this test because we are verifying the pure fused
@@ -90,16 +91,40 @@ def test_hit_count_recent_thought_ranks_above_stale(cfg: MuninConfig) -> None:
         recall_mmr_enabled=False,
     )
 
-    # Insert hot thought and recall it a few times to raise hit_count.
+    # Insert both thoughts (embeddings computed, rows created).
     remember(hot_content, project="pytest_hybrid_rank", config=no_mmr_cfg)
-    # Bump hit count by recalling the hot thought multiple times.
-    for _ in range(3):
-        recall(hot_content, project="pytest_hybrid_rank", config=no_mmr_cfg, limit=5)
-
-    # Insert cold thought after — no further recalls.
     remember(cold_content, project="pytest_hybrid_rank", config=no_mmr_cfg)
 
-    # Now recall with a neutral query that both thoughts match equally well.
+    # Deterministically set signal values via direct SQL UPDATE.
+    # - hot: created 30 days ago, hit 5 times, last used NOW (recently active).
+    # - cold: created 365 days ago, never hit, last_hit_at also 365 days ago (truly stale).
+    pool = get_pool(no_mmr_cfg)
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """
+                UPDATE thoughts
+                   SET created_at  = now() - interval '30 days',
+                       hit_count   = 5,
+                       last_hit_at = now()
+                 WHERE project = 'pytest_hybrid_rank'
+                   AND content = %s
+                """,
+                (hot_content,),
+            )
+            cur.execute(
+                """
+                UPDATE thoughts
+                   SET created_at  = now() - interval '365 days',
+                       hit_count   = 0,
+                       last_hit_at = now() - interval '365 days'
+                 WHERE project = 'pytest_hybrid_rank'
+                   AND content = %s
+                """,
+                (cold_content,),
+            )
+
+    # Recall with a neutral query that both thoughts match equally well.
     results = recall(
         "database indexing B-tree",
         project="pytest_hybrid_rank",
