@@ -32,6 +32,12 @@ _DEFAULTS: dict[str, str | int | float | bool] = {
     # recall_mmr_lambda:  trade-off between relevance (1.0) and diversity (0.0); default 0.7
     "recall_mmr_enabled": True,
     "recall_mmr_lambda": 0.7,
+    # Semantic near-duplicate detection on write (P2-1).
+    # remember_dedup_enabled: when True, ANN-check before insert and skip/merge if
+    #   the top in-project hit exceeds remember_dedup_threshold.
+    # remember_dedup_threshold: cosine similarity cutoff; >= this value => skip (default 0.95)
+    "remember_dedup_enabled": True,
+    "remember_dedup_threshold": 0.95,
 }
 
 _ENV_MAP: dict[str, str] = {
@@ -46,11 +52,16 @@ _ENV_MAP: dict[str, str] = {
     "recall_rrf_k": "MUNIN_RECALL_RRF_K",
     "recall_mmr_enabled": "MUNIN_RECALL_MMR_ENABLED",
     "recall_mmr_lambda": "MUNIN_RECALL_MMR_LAMBDA",
+    "remember_dedup_enabled": "MUNIN_REMEMBER_DEDUP_ENABLED",
+    "remember_dedup_threshold": "MUNIN_REMEMBER_DEDUP_THRESHOLD",
 }
 
 _INT_FIELDS = {"embed_dim", "default_limit", "embed_batch_size", "recall_rrf_k"}
-_FLOAT_FIELDS = {"recall_w_rrf", "recall_w_recency", "recall_w_hits", "recall_mmr_lambda"}
-_BOOL_FIELDS = {"recall_mmr_enabled"}
+_FLOAT_FIELDS = {
+    "recall_w_rrf", "recall_w_recency", "recall_w_hits",
+    "recall_mmr_lambda", "remember_dedup_threshold",
+}
+_BOOL_FIELDS = {"recall_mmr_enabled", "remember_dedup_enabled"}
 
 
 @dataclass
@@ -68,6 +79,9 @@ class MuninConfig:
     # MMR diversity re-ranking (US-004)
     recall_mmr_enabled: bool = True
     recall_mmr_lambda: float = 0.7
+    # Semantic near-duplicate detection on write (P2-1)
+    remember_dedup_enabled: bool = True
+    remember_dedup_threshold: float = 0.95
 
 
 def load(config_path: Path | None = None) -> MuninConfig:
@@ -124,4 +138,6 @@ def load(config_path: Path | None = None) -> MuninConfig:
         recall_rrf_k=int(resolved["recall_rrf_k"]),
         recall_mmr_enabled=bool(resolved["recall_mmr_enabled"]),
         recall_mmr_lambda=float(resolved["recall_mmr_lambda"]),
+        remember_dedup_enabled=bool(resolved["remember_dedup_enabled"]),
+        remember_dedup_threshold=float(resolved["remember_dedup_threshold"]),
     )

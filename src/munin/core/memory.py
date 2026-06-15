@@ -397,6 +397,33 @@ def remember(
     pool = get_pool(cfg)
     pool.open(wait=True)
 
+    # P2-1: Semantic near-duplicate detection — ANN-check before insert.
+    # When enabled, query the top-1 in-project neighbour and skip if cosine
+    # similarity >= threshold.  Flag OFF restores prior insert-always behaviour.
+    if cfg.remember_dedup_enabled:
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, 1 - (embedding <=> %s::vector) AS cosine"
+                    " FROM thoughts"
+                    " WHERE project = %s"
+                    " ORDER BY embedding <=> %s::vector"
+                    " LIMIT 1",
+                    (embedding_str, resolved_project, embedding_str),
+                )
+                dup_row: Any = cur.fetchone()
+
+        if dup_row is not None:
+            dup_id = UUID(str(dup_row[0]))
+            cosine = float(dup_row[1])
+            if cosine >= cfg.remember_dedup_threshold:
+                logger.info(
+                    "remember: dedup skip — new thought is near-duplicate of %s"
+                    " (cosine=%.4f >= threshold=%.4f); project=%s",
+                    dup_id, cosine, cfg.remember_dedup_threshold, resolved_project,
+                )
+                return dup_id
+
     with pool.connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
