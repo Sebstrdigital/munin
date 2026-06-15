@@ -1,0 +1,162 @@
+[
+  {
+    "id": 1,
+    "query": "How does dua-cs-agent plan to reduce token costs in the KB retrieval pipeline?",
+    "expected_thought_id": "5d6d6590-e200-49d8-ab53-12f90964bb3d",
+    "project": "dua-cs-agent",
+    "scope": null,
+    "comment": "Thought describes the problem of embedding the entire KB in every prompt and the plan to switch to vector search for relevant sections. Query paraphrases 'token costs / retrieval' rather than copying exact text."
+  },
+  {
+    "id": 2,
+    "query": "What is the release history and major milestones of the dua-cs-agent product from v1?",
+    "expected_thought_id": "bf6266f1-0201-4a8b-a3aa-a0a967386356",
+    "project": "dua-cs-agent",
+    "scope": null,
+    "comment": "Thought covers Phase 1-3.5 Foundation timeline. Query asks about version history / milestones, a natural agent question."
+  },
+  {
+    "id": 3,
+    "query": "What is the Next.js directory layout for the nettobrand ecommerce site, including B2C and B2B routes?",
+    "expected_thought_id": "cd09e7e5-d059-417f-afba-1c2d96a9d63d",
+    "project": "nettobrand",
+    "scope": null,
+    "comment": "Thought contains the full src/app directory tree with B2C layout group, produkter route, etc. Query targets structure/architecture not specific wording."
+  },
+  {
+    "id": 4,
+    "query": "What TypeScript debt items from Sprint 3 still need to be fixed in nettobrand, especially around Prisma?",
+    "expected_thought_id": "0e3ac5e9-2f82-44cb-8629-a4a69cceb5e6",
+    "project": "nettobrand",
+    "scope": null,
+    "comment": "Thought documents the M-001 as any casts on savedAddress masking stale Prisma client. Query paraphrases 'TypeScript debt / Prisma / Sprint 3'."
+  },
+  {
+    "id": 5,
+    "query": "What is the bug risk when orgId is null in the kraken POS system?",
+    "expected_thought_id": "c2ad5314-cbde-4400-8f95-14df7ae58fcb",
+    "project": "kraken",
+    "scope": null,
+    "comment": "Thought flags the orgId non-null assertion that swallows null org silently. Query paraphrases the bug without using the exact field name 'non-null assertion'."
+  },
+  {
+    "id": 6,
+    "query": "Where is type safety bypassed in kraken's tool execution layer and how?",
+    "expected_thought_id": "163933cf-f2cc-44fa-bab1-f4fd7088333d",
+    "project": "kraken",
+    "scope": null,
+    "comment": "Thought describes executeTool using as unknown as type erasure in lib/anthropic/tools.ts. Query asks about type safety bypass in tool execution without verbatim text."
+  },
+  {
+    "id": 7,
+    "query": "What were the key findings from the munin improvement plan analysis about retrieval quality?",
+    "expected_thought_id": "43963055-4926-4397-a67b-e3576476dbe3",
+    "project": "munin",
+    "scope": null,
+    "comment": "Thought records the 2026-06-15 industry analysis conclusion that munin's real gaps are retrieval quality and memory lifecycle, not performance. Query paraphrases the strategic finding."
+  },
+  {
+    "id": 8,
+    "query": "What features were shipped in munin Phase 1 and when was it completed?",
+    "expected_thought_id": "08efe85a-3a12-43ff-9724-a8262e348f47",
+    "project": "munin",
+    "scope": null,
+    "comment": "Thought documents Phase 1 completion on takt/munin-improvements: migrate.sh, sql/006 FTS, hybrid RRF, MMR. Query asks what shipped and when."
+  },
+  {
+    "id": 9,
+    "query": "In takt, who acts as the orchestrator — is there a separate orchestrator agent or does the session agent do it?",
+    "expected_thought_id": "a6652620-f8d8-4494-bf87-d88d69dbca23",
+    "project": "takt",
+    "scope": null,
+    "comment": "Thought explicitly states 'the session agent IS the orchestrator' with no intermediary. Query tests this architectural fact using a question framing."
+  },
+  {
+    "id": 10,
+    "query": "How is a multi-level agent hierarchy defined in the claude-tools framework, with a planner delegating to workers?",
+    "expected_thought_id": "e33116c5-c005-47e1-9b7a-f09809931db4",
+    "project": "claude-tools",
+    "scope": null,
+    "comment": "Thought defines the supervisor/planner multi-level architecture where workers may further decompose. Query paraphrases 'hierarchy / planner / workers' without quoting the definition."
+  },
+  {
+    "id": 11,
+    "query": "What happened during the sepanel-oribium integration session that caused it to be aborted?",
+    "expected_thought_id": "be0ef405-0b3f-4ca5-bf00-72b1bb01d532",
+    "project": "oribium",
+    "scope": null,
+    "comment": "Thought records the 2026-04-23 sepanel_oribium session that was ABORTED and reset. Query asks about the failed session without copying the failure reason."
+  },
+  {
+    "id": 12,
+    "query": "What is the status of the oribium integration/new-main branch and what approval is still needed?",
+    "expected_thought_id": "454d951b-5ebd-4d53-964e-26d0cae16c53",
+    "project": "oribium",
+    "scope": null,
+    "comment": "Thought records the integration/new-main push and that Reino approval is pending. Query paraphrases branch status and gating condition."
+  },
+  {
+    "id": 13,
+    "query": "Where is the canonical composite tool pattern implemented in the mcp-servers Fortnox codebase?",
+    "expected_thought_id": "c1caa824-7205-40ea-9c11-bab87e2957ee",
+    "project": "mcp-servers",
+    "scope": null,
+    "comment": "Thought pinpoints the canonical implementation at fortnox-mcp/src/fortnox_mcp/tools/composite/analytics.py. Query asks where to find the canonical pattern."
+  },
+  {
+    "id": 14,
+    "query": "What are the high-severity tool design problems in the dua-erp MCP spec, particularly around overlapping tools?",
+    "expected_thought_id": "a4f973b7-9d3b-4f9d-a782-cc020ffecd4e",
+    "project": "dua-erp",
+    "scope": null,
+    "comment": "Thought documents the HIGH severity Tool Ambiguity anti-pattern with overlapping time-entry tools. Query asks about tool design problems / overlap without verbatim text."
+  },
+  {
+    "id": 15,
+    "query": "How does the dikta formatter detect and extract the greeting from dictated text?",
+    "expected_thought_id": "b35be842-3311-4ad4-847e-fcf8a967454a",
+    "project": "dikta",
+    "scope": null,
+    "comment": "Thought documents the three-pass formatter with Pass 1 scanning the beginning for greeting patterns. Query asks about greeting detection specifically."
+  },
+  {
+    "id": 16,
+    "query": "What Windows architecture decisions were made in dikta v1.2 around Whisper model caching?",
+    "expected_thought_id": "eea06994-6537-4cda-80fc-691801244155",
+    "project": "dikta",
+    "scope": null,
+    "comment": "Thought describes WhisperFactory caching (load once per session, invalidate on model-path change) from the Windows v1.2 iteration. Query paraphrases 'Windows / model caching' without exact wording."
+  },
+  {
+    "id": 17,
+    "query": "What process failures were discovered about takt worker path handling when using worktree isolation?",
+    "expected_thought_id": "5ee7584b-b639-48aa-9e55-6ea0c1d425c6",
+    "project": "dikta",
+    "scope": null,
+    "comment": "Thought records the finding that takt workers with worktree isolation wrote to main repo path instead of their worktree. Scoped to dikta because that's the project where this was discovered."
+  },
+  {
+    "id": 18,
+    "query": "What tools are exposed by the dua-erp MCP server spec including auth and user management operations?",
+    "expected_thought_id": "f99f03d1-68b1-46d4-9764-ad627c58604f",
+    "project": "dua-erp",
+    "scope": null,
+    "comment": "Thought contains the 40+ tools spec listing authenticate, logout, create_user, disable_user etc. Query asks about the tool surface without verbatim names."
+  },
+  {
+    "id": 19,
+    "query": "How does the claude-tools installer handle file conflicts when a previous version already exists?",
+    "expected_thought_id": "545ca6cc-8330-4868-bdc0-53c5f939bfc8",
+    "project": "claude-tools",
+    "scope": null,
+    "comment": "Thought documents the safe install behavior: updates files that came from the repo (source_id: seb-claude-tools), version-tracks them. Query paraphrases 'conflict / existing files / install'."
+  },
+  {
+    "id": 20,
+    "query": "What slash commands are available in the claude-tools Swiss Design UI Toolkit workflow?",
+    "expected_thought_id": "39a8069c-3581-4000-b46c-2fb5650b6a01",
+    "project": "claude-tools",
+    "scope": null,
+    "comment": "Thought lists the /ui /component /page /refine /prd command table. Query asks about the UI toolkit commands without copying the table."
+  }
+]
