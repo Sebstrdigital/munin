@@ -11,7 +11,7 @@ from munin.core.errors import MuninConfigError
 
 _DEFAULT_CONFIG_PATH = Path.home() / ".config" / "munin" / "config.toml"
 
-_DEFAULTS: dict[str, str | int | float] = {
+_DEFAULTS: dict[str, str | int | float | bool] = {
     "db_url": "postgresql://munin:munin@localhost:5433/munin",
     "embed_url": "http://localhost:8088",
     "embed_dim": 768,
@@ -27,6 +27,11 @@ _DEFAULTS: dict[str, str | int | float] = {
     "recall_w_hits": 0.1,
     # RRF constant k — higher values reduce the influence of rank position (default 60)
     "recall_rrf_k": 60,
+    # MMR diversity re-ranking (US-004).
+    # recall_mmr_enabled: when True, apply Maximal Marginal Relevance after hybrid fusion
+    # recall_mmr_lambda:  trade-off between relevance (1.0) and diversity (0.0); default 0.7
+    "recall_mmr_enabled": True,
+    "recall_mmr_lambda": 0.7,
 }
 
 _ENV_MAP: dict[str, str] = {
@@ -39,10 +44,13 @@ _ENV_MAP: dict[str, str] = {
     "recall_w_recency": "MUNIN_RECALL_W_RECENCY",
     "recall_w_hits": "MUNIN_RECALL_W_HITS",
     "recall_rrf_k": "MUNIN_RECALL_RRF_K",
+    "recall_mmr_enabled": "MUNIN_RECALL_MMR_ENABLED",
+    "recall_mmr_lambda": "MUNIN_RECALL_MMR_LAMBDA",
 }
 
 _INT_FIELDS = {"embed_dim", "default_limit", "embed_batch_size", "recall_rrf_k"}
-_FLOAT_FIELDS = {"recall_w_rrf", "recall_w_recency", "recall_w_hits"}
+_FLOAT_FIELDS = {"recall_w_rrf", "recall_w_recency", "recall_w_hits", "recall_mmr_lambda"}
+_BOOL_FIELDS = {"recall_mmr_enabled"}
 
 
 @dataclass
@@ -57,6 +65,9 @@ class MuninConfig:
     recall_w_recency: float = 0.2
     recall_w_hits: float = 0.1
     recall_rrf_k: int = 60
+    # MMR diversity re-ranking (US-004)
+    recall_mmr_enabled: bool = True
+    recall_mmr_lambda: float = 0.7
 
 
 def load(config_path: Path | None = None) -> MuninConfig:
@@ -96,6 +107,8 @@ def load(config_path: Path | None = None) -> MuninConfig:
                     raise MuninConfigError(
                         f"Env var {env_var}={raw!r} is not a valid float"
                     ) from exc
+            elif field in _BOOL_FIELDS:
+                resolved[field] = raw.lower() not in {"0", "false", "no", "off"}
             else:
                 resolved[field] = raw
 
@@ -109,4 +122,6 @@ def load(config_path: Path | None = None) -> MuninConfig:
         recall_w_recency=float(resolved["recall_w_recency"]),
         recall_w_hits=float(resolved["recall_w_hits"]),
         recall_rrf_k=int(resolved["recall_rrf_k"]),
+        recall_mmr_enabled=bool(resolved["recall_mmr_enabled"]),
+        recall_mmr_lambda=float(resolved["recall_mmr_lambda"]),
     )

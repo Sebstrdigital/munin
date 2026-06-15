@@ -67,24 +67,43 @@ def test_hit_count_recent_thought_ranks_above_stale(cfg: MuninConfig) -> None:
       - 'hot' thought: inserted, then hit several times (hit_count > 0, recent last_hit_at)
       - 'cold' thought: inserted, never recalled (hit_count = 0, no last_hit_at)
     Both have semantically similar content about "database indexing".
+
+    MMR is disabled for this test because we are verifying the pure fused
+    multi-signal ranking from the RPC (US-003), not MMR diversity (US-004).
+    With two near-duplicate thoughts and MMR active, the diversity pass would
+    re-order them, masking the hit_count + recency signal under test.
     """
     hot_content = "database indexing strategy with B-tree and hash indexes"
     cold_content = "database indexing approach using B-tree and hash structures"
 
+    # Build a no-MMR config derived from the session config.
+    no_mmr_cfg = MuninConfig(
+        db_url=cfg.db_url,
+        embed_url=cfg.embed_url,
+        embed_dim=cfg.embed_dim,
+        default_limit=cfg.default_limit,
+        embed_batch_size=cfg.embed_batch_size,
+        recall_w_rrf=cfg.recall_w_rrf,
+        recall_w_recency=cfg.recall_w_recency,
+        recall_w_hits=cfg.recall_w_hits,
+        recall_rrf_k=cfg.recall_rrf_k,
+        recall_mmr_enabled=False,
+    )
+
     # Insert hot thought and recall it a few times to raise hit_count.
-    remember(hot_content, project="pytest_hybrid_rank", config=cfg)
+    remember(hot_content, project="pytest_hybrid_rank", config=no_mmr_cfg)
     # Bump hit count by recalling the hot thought multiple times.
     for _ in range(3):
-        recall(hot_content, project="pytest_hybrid_rank", config=cfg, limit=5)
+        recall(hot_content, project="pytest_hybrid_rank", config=no_mmr_cfg, limit=5)
 
     # Insert cold thought after — no further recalls.
-    remember(cold_content, project="pytest_hybrid_rank", config=cfg)
+    remember(cold_content, project="pytest_hybrid_rank", config=no_mmr_cfg)
 
     # Now recall with a neutral query that both thoughts match equally well.
     results = recall(
         "database indexing B-tree",
         project="pytest_hybrid_rank",
-        config=cfg,
+        config=no_mmr_cfg,
         limit=10,
     )
 

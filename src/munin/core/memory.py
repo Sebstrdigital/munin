@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any
@@ -16,6 +17,77 @@ from munin.core.embed import embed
 from munin.core.errors import MuninError
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# MMR helper
+# ---------------------------------------------------------------------------
+
+def _cosine(a: list[float], b: list[float]) -> float:
+    """Cosine similarity between two equal-length vectors."""
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if norm_a == 0.0 or norm_b == 0.0:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _mmr_rerank(
+    candidates: list[ThoughtResult],
+    embeddings: dict[UUID, list[float]],
+    *,
+    lambda_: float,
+    k: int,
+) -> list[ThoughtResult]:
+    """Maximal Marginal Relevance re-ranking over *candidates*.
+
+    Selects *k* items iteratively.  Each step picks the candidate that maximises:
+        lambda_ * relevance_score  -  (1 - lambda_) * max_similarity_to_selected
+
+    relevance_score is taken from ThoughtResult.similarity (the fused hybrid
+    score already computed by the RPC).  Pairwise similarity is computed as
+    cosine distance over the raw embedding vectors.
+
+    Args:
+        candidates: Fused-ranked candidates (ordered by descending hybrid score).
+        embeddings: Map of thought id → raw embedding vector (768-dim).
+        lambda_:    Trade-off weight — 1.0 = pure relevance, 0.0 = pure diversity.
+        k:          Number of results to select (≤ len(candidates)).
+
+    Returns:
+        Up to *k* ThoughtResults in MMR order.
+    """
+    if not candidates or k <= 0:
+        return []
+
+    # Normalise relevance scores to [0, 1] so they are on the same scale as cosine.
+    max_score = max(c.similarity for c in candidates) or 1.0
+    rel: dict[UUID, float] = {c.id: c.similarity / max_score for c in candidates}
+
+    remaining = list(candidates)
+    selected: list[ThoughtResult] = []
+
+    while remaining and len(selected) < k:
+        if not selected:
+            # Bootstrap: pick the highest-relevance candidate first.
+            best = max(remaining, key=lambda c: rel[c.id])
+        else:
+            # For each remaining candidate compute MMR score.
+            selected_embs = [embeddings[s.id] for s in selected if s.id in embeddings]
+
+            def mmr_score(c: ThoughtResult) -> float:
+                emb = embeddings.get(c.id)
+                if emb is None or not selected_embs:
+                    return lambda_ * rel[c.id]
+                max_sim = max(_cosine(emb, se) for se in selected_embs)
+                return lambda_ * rel[c.id] - (1.0 - lambda_) * max_sim
+
+            best = max(remaining, key=mmr_score)
+
+        selected.append(best)
+        remaining.remove(best)
+
+    return selected
 
 
 @dataclass
@@ -47,11 +119,20 @@ def recall(
     lexical full-text leg, then applies multi-signal re-ranking that weighs
     fused relevance, recency (last_hit_at / created_at), and hit_count.
 
-    Ranking weights and RRF constant are read from config (see MuninConfig):
-        recall_w_rrf      — weight for fused RRF relevance (default 0.7)
-        recall_w_recency  — weight for recency signal (default 0.2)
-        recall_w_hits     — weight for normalised hit_count (default 0.1)
-        recall_rrf_k      — RRF k constant (default 60)
+    When recall_mmr_enabled is True (default), a Maximal Marginal Relevance pass
+    re-orders the fused candidates to balance relevance against diversity.  The
+    trade-off is controlled by recall_mmr_lambda (default 0.7 — higher means more
+    relevance, lower means more diversity).  To get a large enough candidate pool
+    for MMR, the RPC is asked for match_limit * 5 rows; MMR then selects the final
+    match_limit.  When MMR is disabled the pure fused ranking is returned unchanged.
+
+    Config fields read (see MuninConfig):
+        recall_w_rrf        — weight for fused RRF relevance signal (default 0.7)
+        recall_w_recency    — weight for recency signal (default 0.2)
+        recall_w_hits       — weight for normalised hit_count (default 0.1)
+        recall_rrf_k        — RRF k constant (default 60)
+        recall_mmr_enabled  — enable MMR re-ranking (default True)
+        recall_mmr_lambda   — MMR relevance/diversity trade-off (default 0.7)
 
     Args:
         query: Natural-language query to embed (dense leg) and search (lexical leg).
@@ -62,7 +143,8 @@ def recall(
         config: Optional config override; uses load() if not provided.
 
     Returns:
-        List of ThoughtResult ordered by descending hybrid score.
+        List of ThoughtResult (length ≤ limit), ordered by MMR score when MMR is
+        enabled, or by descending hybrid score when MMR is disabled.
 
     Raises:
         MuninError: If project cannot be determined.
@@ -76,7 +158,18 @@ def recall(
         )
 
     match_limit = limit if limit is not None else cfg.default_limit
-    logger.debug("recall: project=%s query_len=%d limit=%d", resolved_project, len(query), match_limit)
+
+    # When MMR is enabled we need a larger candidate pool so the diversity pass
+    # has meaningful choices.  We ask the RPC for match_limit * 5 candidates
+    # (mirrors the internal candidate_factor=5 logic in the SQL function).
+    # The final slice back to match_limit happens after MMR.
+    mmr_enabled = cfg.recall_mmr_enabled
+    rpc_limit = match_limit * 5 if mmr_enabled else match_limit
+
+    logger.debug(
+        "recall: project=%s query_len=%d limit=%d mmr=%s",
+        resolved_project, len(query), match_limit, mmr_enabled,
+    )
     vec = embed(query, config=cfg)
     # DR-003: fixed-precision formatting avoids repr() emitting 'nan'/'inf'.
     vec_str = "[" + ",".join(f"{v:.8g}" for v in vec) + "]"
@@ -84,7 +177,7 @@ def recall(
     pool = get_pool(cfg)
     pool.open(wait=True)
 
-    results: list[ThoughtResult] = []
+    candidates: list[ThoughtResult] = []
     with pool.connection() as conn:
         with conn.cursor() as cur:
             # Set HNSW query-time parameters for this transaction.
@@ -102,7 +195,7 @@ def recall(
                 "   %s,"           # query_text (lexical leg)
                 "   %s,"           # p_project
                 "   %s,"           # p_scope
-                "   %s,"           # match_limit
+                "   %s,"           # match_limit (rpc_limit — enlarged for MMR)
                 "   %s,"           # similarity_threshold
                 "   %s,"           # rrf_k
                 "   5,"            # candidate_factor (fixed at 5)
@@ -115,7 +208,7 @@ def recall(
                     query,
                     resolved_project,
                     scope,
-                    match_limit,
+                    rpc_limit,
                     threshold,
                     cfg.recall_rrf_k,
                     cfg.recall_w_rrf,
@@ -124,7 +217,7 @@ def recall(
                 ),
             )
             for row in cur.fetchall():
-                results.append(
+                candidates.append(
                     ThoughtResult(
                         id=row[0],
                         content=row[1],
@@ -137,7 +230,37 @@ def recall(
                     )
                 )
 
-            # Bump hit counters for every returned thought.
+            if mmr_enabled and len(candidates) > 1:
+                # Fetch raw embeddings for the candidate set so MMR can compute
+                # pairwise cosine similarity.  A single query by UUID array is
+                # cheap relative to the full HNSW scan already performed above.
+                candidate_ids = [c.id for c in candidates]
+                cur.execute(
+                    "SELECT id, embedding::text FROM thoughts WHERE id = ANY(%s)",
+                    (candidate_ids,),
+                )
+                embeddings: dict[UUID, list[float]] = {}
+                for emb_row in cur.fetchall():
+                    eid = UUID(str(emb_row[0]))
+                    # Postgres returns vector as a string like "[0.1,0.2,...]"
+                    raw = str(emb_row[1]).strip("[]")
+                    embeddings[eid] = [float(x) for x in raw.split(",")]
+
+                logger.debug(
+                    "recall: MMR over %d candidates → selecting %d (lambda=%.2f)",
+                    len(candidates), match_limit, cfg.recall_mmr_lambda,
+                )
+                results = _mmr_rerank(
+                    candidates,
+                    embeddings,
+                    lambda_=cfg.recall_mmr_lambda,
+                    k=match_limit,
+                )
+            else:
+                # MMR disabled or single candidate: return pure fused ranking.
+                results = candidates[:match_limit]
+
+            # Bump hit counters only for thoughts actually returned to the caller.
             if results:
                 hit_ids = [r.id for r in results]
                 cur.execute(

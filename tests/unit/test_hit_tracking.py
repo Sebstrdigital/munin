@@ -40,6 +40,10 @@ def cfg() -> MuninConfig:
         recall_w_recency=0.2,
         recall_w_hits=0.1,
         recall_rrf_k=60,
+        # MMR disabled in unit tests — MMR behaviour is covered by integration tests.
+        # Disabling here keeps the mock cursor call-count predictable (no extra
+        # embedding-fetch execute call).
+        recall_mmr_enabled=False,
     )
 
 
