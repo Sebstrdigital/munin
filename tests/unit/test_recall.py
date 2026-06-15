@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -13,7 +13,6 @@ import pytest
 
 from munin.core import scope as _scope
 from munin.core.config import MuninConfig
-
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -31,11 +30,20 @@ def clear_scope_cache() -> Iterator[None]:
 @pytest.fixture()
 def cfg() -> MuninConfig:
     return MuninConfig(
-        db_url="postgresql://munin:munin@localhost:5433/munin",
+        db_url="postgresql://munin:munin@localhost:5433/munin_test",
         embed_url="http://localhost:8088",
         embed_dim=768,
         default_limit=10,
         embed_batch_size=32,
+        # Hybrid ranking weights (US-003 defaults)
+        recall_w_rrf=0.7,
+        recall_w_recency=0.2,
+        recall_w_hits=0.1,
+        recall_rrf_k=60,
+        # MMR disabled in unit tests — MMR behaviour is covered by integration tests.
+        # Disabling here keeps the mock cursor call-count predictable (no extra
+        # embedding-fetch execute call) and avoids expanding match_limit * 5.
+        recall_mmr_enabled=False,
     )
 
 
@@ -49,7 +57,12 @@ def _make_row(
     metadata: dict[str, Any] | None = None,
     similarity: float = 0.9,
     created_at: datetime | None = None,
+    fused_score: float = 0.75,
 ) -> tuple[Any, ...]:
+    # Columns must match the SELECT in memory.py:
+    #   0: id, 1: content, 2: project, 3: scope, 4: tags, 5: metadata,
+    #   6: similarity, 7: created_at, 8: updated_at, 9: score (fused)
+    ts = created_at or datetime(2024, 1, 1, tzinfo=UTC)
     return (
         row_id or uuid.uuid4(),
         content,
@@ -58,7 +71,9 @@ def _make_row(
         tags or [],
         metadata or {},
         similarity,
-        created_at or datetime(2024, 1, 1, tzinfo=timezone.utc),
+        ts,
+        ts,           # updated_at (row[8])
+        fused_score,  # score / fused_score (row[9])
     )
 
 
@@ -152,6 +167,33 @@ class TestRecallErrors:
 
 
 class TestRecallArguments:
+    # Helper: extract the match_thoughts execute call from cursor mock.
+    # recall() now issues 3 cursor.execute calls:
+    #   [0] SET LOCAL hnsw.ef_search = 100
+    #   [1] SET LOCAL hnsw.iterative_scan = 'relaxed_order'
+    #   [2] SELECT ... FROM match_thoughts(...)
+    # We always inspect call index 2 (the last call).
+    #
+    # Parameter order in the match_thoughts call tuple:
+    #   params[0] = query_embedding (vec_str)
+    #   params[1] = query_text
+    #   params[2] = p_project
+    #   params[3] = p_scope
+    #   params[4] = match_limit
+    #   params[5] = similarity_threshold
+    #   params[6] = rrf_k
+    #   params[7] = w_rrf
+    #   params[8] = w_recency
+    #   params[9] = w_hits
+
+    def _match_thoughts_call(self, cursor: MagicMock) -> tuple[str, tuple[Any, ...]]:
+        """Return (sql, params) for the match_thoughts SELECT call."""
+        assert cursor.execute.call_count == 3, (
+            f"Expected 3 execute calls (2x SET LOCAL + 1x SELECT), "
+            f"got {cursor.execute.call_count}"
+        )
+        return cursor.execute.call_args_list[2][0]  # type: ignore[return-value]
+
     def test_passes_scope_limit_threshold_to_cursor(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -167,13 +209,13 @@ class TestRecallArguments:
 
         recall("test query", scope="design", limit=5, threshold=0.7, config=cfg)
 
-        cursor.execute.assert_called_once()
-        sql, params = cursor.execute.call_args[0]
+        sql, params = self._match_thoughts_call(cursor)
         assert "match_thoughts" in sql
-        assert params[1] == "testproject"
-        assert params[2] == "design"
-        assert params[3] == 5
-        assert params[4] == 0.7
+        assert params[1] == "test query"   # query_text
+        assert params[2] == "testproject"  # p_project
+        assert params[3] == "design"       # p_scope
+        assert params[4] == 5              # match_limit
+        assert params[5] == 0.7            # similarity_threshold
 
     def test_uses_config_default_limit_when_limit_not_passed(
         self,
@@ -190,8 +232,8 @@ class TestRecallArguments:
 
         recall("query", config=cfg)
 
-        _, params = cursor.execute.call_args[0]
-        assert params[3] == cfg.default_limit  # 10
+        _, params = self._match_thoughts_call(cursor)
+        assert params[4] == cfg.default_limit  # match_limit = 10
 
     def test_explicit_project_skips_scope_detection(
         self,
@@ -213,8 +255,8 @@ class TestRecallArguments:
         recall("query", project="explicit-proj", config=cfg)
 
         assert not called, "current_project should not be called when project= is provided"
-        _, params = cursor.execute.call_args[0]
-        assert params[1] == "explicit-proj"
+        _, params = self._match_thoughts_call(cursor)
+        assert params[2] == "explicit-proj"  # p_project
 
     def test_scope_none_passes_none_to_cursor(
         self,
@@ -231,8 +273,52 @@ class TestRecallArguments:
 
         recall("query", config=cfg)  # no scope
 
-        _, params = cursor.execute.call_args[0]
-        assert params[2] is None
+        _, params = self._match_thoughts_call(cursor)
+        assert params[3] is None  # p_scope
+
+    def test_ranking_weights_passed_from_config(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        cfg: MuninConfig,
+    ) -> None:
+        """Ranking weights and rrf_k from config are forwarded to match_thoughts."""
+        from munin.core.memory import recall
+
+        monkeypatch.setattr("munin.core.memory.embed", lambda *a, **kw: [0.1] * 768)
+        monkeypatch.setattr(
+            "munin.core.memory._scope.current_project", lambda: "proj"
+        )
+        cursor = _mock_pool_with_rows(monkeypatch, [])
+
+        recall("query", config=cfg)
+
+        _, params = self._match_thoughts_call(cursor)
+        assert params[6] == cfg.recall_rrf_k        # rrf_k
+        assert params[7] == cfg.recall_w_rrf         # w_rrf
+        assert params[8] == cfg.recall_w_recency     # w_recency
+        assert params[9] == cfg.recall_w_hits        # w_hits
+
+    def test_hnsw_set_local_issued_before_select(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+        cfg: MuninConfig,
+    ) -> None:
+        """The two HNSW SET LOCAL statements are issued before the SELECT."""
+        from munin.core.memory import recall
+
+        monkeypatch.setattr("munin.core.memory.embed", lambda *a, **kw: [0.1] * 768)
+        monkeypatch.setattr(
+            "munin.core.memory._scope.current_project", lambda: "proj"
+        )
+        cursor = _mock_pool_with_rows(monkeypatch, [])
+
+        recall("query", config=cfg)
+
+        calls = cursor.execute.call_args_list
+        assert len(calls) == 3
+        assert "hnsw.ef_search" in calls[0][0][0]
+        assert "hnsw.iterative_scan" in calls[1][0][0]
+        assert "match_thoughts" in calls[2][0][0]
 
 
 # ---------------------------------------------------------------------------
@@ -249,7 +335,7 @@ class TestRecallMapping:
         from munin.core.memory import ThoughtResult, recall
 
         row_id = uuid.uuid4()
-        created = datetime(2024, 6, 1, tzinfo=timezone.utc)
+        created = datetime(2024, 6, 1, tzinfo=UTC)
         row = _make_row(
             row_id=row_id,
             content="auth decision content",
@@ -259,6 +345,7 @@ class TestRecallMapping:
             metadata={"source": "slack"},
             similarity=0.87,
             created_at=created,
+            fused_score=0.72,
         )
 
         monkeypatch.setattr("munin.core.memory.embed", lambda *a, **kw: [0.1] * 768)
@@ -279,6 +366,7 @@ class TestRecallMapping:
         assert r.tags == ["auth", "security"]
         assert r.metadata == {"source": "slack"}
         assert r.similarity == pytest.approx(0.87)
+        assert r.fused_score == pytest.approx(0.72)
         assert r.created_at == created
 
     def test_empty_tags_and_metadata_become_empty_collections(

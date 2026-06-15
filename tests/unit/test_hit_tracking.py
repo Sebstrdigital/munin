@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import uuid
 from collections.abc import Iterator
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock
 
@@ -12,7 +12,6 @@ import pytest
 
 from munin.core import scope as _scope
 from munin.core.config import MuninConfig
-
 
 # ---------------------------------------------------------------------------
 # Fixtures / helpers
@@ -30,11 +29,20 @@ def clear_scope_cache() -> Iterator[None]:
 @pytest.fixture()
 def cfg() -> MuninConfig:
     return MuninConfig(
-        db_url="postgresql://munin:munin@localhost:5433/munin",
+        db_url="postgresql://munin:munin@localhost:5433/munin_test",
         embed_url="http://localhost:8088",
         embed_dim=768,
         default_limit=10,
         embed_batch_size=32,
+        # Hybrid ranking weights (US-003 defaults)
+        recall_w_rrf=0.7,
+        recall_w_recency=0.2,
+        recall_w_hits=0.1,
+        recall_rrf_k=60,
+        # MMR disabled in unit tests — MMR behaviour is covered by integration tests.
+        # Disabling here keeps the mock cursor call-count predictable (no extra
+        # embedding-fetch execute call).
+        recall_mmr_enabled=False,
     )
 
 
@@ -48,7 +56,10 @@ def _make_row(
     metadata: dict[str, Any] | None = None,
     similarity: float = 0.9,
     created_at: datetime | None = None,
+    updated_at: datetime | None = None,
+    fused_score: float = 0.9,
 ) -> tuple[Any, ...]:
+    ts = created_at or datetime(2024, 1, 1, tzinfo=UTC)
     return (
         row_id or uuid.uuid4(),
         content,
@@ -57,7 +68,9 @@ def _make_row(
         tags or [],
         metadata or {},
         similarity,
-        created_at or datetime(2024, 1, 1, tzinfo=timezone.utc),
+        ts,
+        updated_at or ts,
+        fused_score,
     )
 
 
@@ -101,9 +114,13 @@ class TestHitCountBump:
 
         recall("query", config=cfg)
 
-        # cursor.execute is called twice: once for SELECT, once for UPDATE
-        assert cursor.execute.call_count == 2
-        update_call = cursor.execute.call_args_list[1]
+        # cursor.execute is called four times:
+        #   [0] SET LOCAL hnsw.ef_search
+        #   [1] SET LOCAL hnsw.iterative_scan
+        #   [2] SELECT ... FROM match_thoughts(...)
+        #   [3] UPDATE thoughts SET hit_count ...
+        assert cursor.execute.call_count == 4
+        update_call = cursor.execute.call_args_list[3]
         sql: str = update_call[0][0]
         params: tuple[Any, ...] = update_call[0][1]
 
@@ -132,7 +149,8 @@ class TestHitCountBump:
 
         recall("query", config=cfg)
 
-        update_call = cursor.execute.call_args_list[1]
+        # UPDATE is the 4th call (index 3): [SET LOCAL ef, SET LOCAL iter, SELECT, UPDATE]
+        update_call = cursor.execute.call_args_list[3]
         passed_ids: list[uuid.UUID] = update_call[0][1][0]
         assert set(passed_ids) == set(ids)
 
@@ -152,8 +170,8 @@ class TestHitCountBump:
 
         recall("query", config=cfg)
 
-        # Only one execute call (the SELECT); no UPDATE issued.
-        assert cursor.execute.call_count == 1
+        # Three execute calls (2x SET LOCAL + SELECT); no UPDATE when empty results.
+        assert cursor.execute.call_count == 3
 
     def test_new_thought_defaults(
         self,
@@ -212,5 +230,6 @@ class TestHitCountBump:
 
         recall("query", config=cfg)
 
-        update_sql: str = cursor.execute.call_args_list[1][0][0]
+        # UPDATE is the 4th call (index 3): [SET LOCAL ef, SET LOCAL iter, SELECT, UPDATE]
+        update_sql: str = cursor.execute.call_args_list[3][0][0]
         assert "superseded_by" not in update_sql

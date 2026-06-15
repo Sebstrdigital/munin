@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import uuid
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from unittest.mock import patch
 
 import pytest
@@ -17,7 +17,7 @@ _RUNNER = CliRunner()
 
 _ID1 = uuid.UUID("aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee")
 _ID2 = uuid.UUID("bbbbbbbb-cccc-dddd-eeee-ffffffffffff")
-_TS = datetime(2024, 6, 1, tzinfo=timezone.utc)
+_TS = datetime(2024, 6, 1, tzinfo=UTC)
 
 
 def _result(
@@ -37,6 +37,7 @@ def _result(
         tags=tags or [],
         metadata={},
         similarity=similarity,
+        fused_score=0.75,
         created_at=_TS,
     )
 

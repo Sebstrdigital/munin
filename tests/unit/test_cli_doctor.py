@@ -5,7 +5,6 @@ from __future__ import annotations
 import json
 from unittest.mock import MagicMock, patch
 
-import pytest
 from typer.testing import CliRunner
 
 from munin.cli.main import app
@@ -15,7 +14,7 @@ from munin.core.errors import MuninDBError, MuninEmbedError
 _RUNNER = CliRunner()
 
 _CFG = MuninConfig(
-    db_url="postgresql://munin:munin@localhost:5433/munin",
+    db_url="postgresql://munin:munin@localhost:5433/munin_test",
     embed_url="http://localhost:8088",
     embed_dim=768,
     default_limit=10,
