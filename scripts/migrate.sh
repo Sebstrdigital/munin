@@ -8,9 +8,11 @@
 #     has the container). SQL is always fed via stdin or -c — never via -f with a
 #     host path, because host paths do not exist inside the container.
 #   - Legacy back-fill: if schema_migrations is created for the first time AND a
-#     `thoughts` table already exists (DB predating migration tracking), all
-#     current sql/NNN_*.sql filenames are recorded as applied so they are
-#     skipped. Only genuinely new migrations then apply.
+#     `thoughts` table already exists (DB predating migration tracking), only
+#     the pre-tracking baseline migrations 001–005 are recorded as applied.
+#     Migrations 006 and later always apply via the normal path, and since
+#     those files are idempotent (ADD COLUMN IF NOT EXISTS / CREATE OR REPLACE
+#     FUNCTION), re-applying them on an already-migrated DB is a safe no-op.
 #   - Exits non-zero and prints the failing file name if any migration errors.
 #   - After applying, verifies thoughts table and core RPC functions are present.
 #
@@ -97,9 +99,16 @@ if $DRY_RUN; then
         echo "  schema_migrations table: MISSING (would be created)"
         if [[ "${thoughts_table_exists}" == "t" ]]; then
             echo "  Legacy DB detected (thoughts table present): would back-fill"
-            echo "  schema_migrations with all current migration filenames and skip them."
+            echo "  schema_migrations with baseline migrations 001-005 only."
+            echo "  Migrations 006+ would then apply via normal path (idempotent)."
             for filepath in "${MIGRATION_FILES[@]}"; do
-                echo "    WOULD MARK APPLIED  $(basename "${filepath}")"
+                filename="$(basename "${filepath}")"
+                num="${filename:0:3}"
+                if [[ "$((10#${num}))" -gt 5 ]]; then
+                    echo "    WOULD APPLY       ${filename} (006+ — not back-filled)"
+                    continue
+                fi
+                echo "    WOULD MARK APPLIED  ${filename}"
             done
         else
             echo "  Fresh DB: would apply all migrations."
@@ -136,13 +145,22 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 );" >/dev/null
 
 # Legacy back-fill: tracking table did not exist before this run, but thoughts
-# does. Assume the existing schema is current — record all migration filenames
-# so they are skipped. Only future (new) migration files will then apply.
+# does. Seed ONLY the pre-tracking baseline migrations (001–005) as applied.
+# Migrations 006 and later are intentionally omitted here so that they run
+# via the normal apply path below — their SQL files are idempotent
+# (ADD COLUMN IF NOT EXISTS / CREATE OR REPLACE FUNCTION), making re-application
+# on an already-migrated DB a harmless no-op.
 if [[ "${migrations_table_exists}" != "t" && "${thoughts_table_exists}" == "t" ]]; then
     echo "Legacy DB detected (thoughts table present, no migration tracking)."
-    echo "Back-filling schema_migrations with current migration filenames..."
+    echo "Back-filling schema_migrations with baseline migrations (001-005)..."
     for filepath in "${MIGRATION_FILES[@]}"; do
         filename="$(basename "${filepath}")"
+        # Only seed the pre-tracking baseline (001 through 005).
+        # Extract the numeric prefix (first 3 chars) and compare as integer.
+        num="${filename:0:3}"
+        if [[ "$((10#${num}))" -gt 5 ]]; then
+            break
+        fi
         run_psql -v ON_ERROR_STOP=1 -c \
             "INSERT INTO schema_migrations (filename) VALUES ('${filename}') ON CONFLICT DO NOTHING;" \
             >/dev/null
