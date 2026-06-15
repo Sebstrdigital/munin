@@ -148,7 +148,7 @@ project = "proj"
     with (
         patch("munin.core.ingest._load_sources") as mock_load,
         patch("munin.core.ingest.get_pool", return_value=mock_pool),
-        patch("munin.core.ingest.embed_fn", return_value=[0.1] * 768) as mock_embed,
+        patch("munin.core.ingest.embed_batch_fn", return_value=[[0.1] * 768]) as mock_embed,
     ):
         mock_load.return_value = [
             MagicMock(path=docs_dir, globs=["**/*.md"], project="proj", scope=None, tags=[])
@@ -171,11 +171,10 @@ project = "proj"
 
 
 def test_unchanged_chunk_skipped(tmp_path: Path) -> None:
-    """SELECT returns matching fingerprint → upsert NOT called → chunks_skipped=1.
+    """SELECT returns matching fingerprint → embed NOT called → upsert NOT called → chunks_skipped=1.
 
-    Note: embed_fn is called before the SELECT (eager embedding), so it will
-    execute once even for unchanged chunks.  What must NOT happen is the
-    upsert_thought or DELETE call — those are gated on a changed fingerprint.
+    US-005: fingerprint check now runs BEFORE embed, so unchanged chunks make
+    zero embedding HTTP calls.
     """
     import hashlib
 
@@ -205,7 +204,7 @@ project = "proj"
     with (
         patch("munin.core.ingest._load_sources") as mock_load,
         patch("munin.core.ingest.get_pool", return_value=mock_pool),
-        patch("munin.core.ingest.embed_fn", return_value=[0.1] * 768) as mock_embed,
+        patch("munin.core.ingest.embed_batch_fn", return_value=[[0.1] * 768]) as mock_embed,
     ):
         mock_load.return_value = [
             MagicMock(path=docs_dir, globs=["**/*.md"], project="proj", scope=None, tags=[])
@@ -215,6 +214,8 @@ project = "proj"
 
     assert result.chunks_skipped == 1
     assert result.chunks_stored == 0
+    # US-005: embed must NOT be called for unchanged content.
+    mock_embed.assert_not_called()
 
     # upsert_thought and DELETE must NOT appear — chunk was skipped.
     mock_conn = mock_pool.connection.return_value.__enter__.return_value
@@ -245,7 +246,7 @@ project = "proj"
     with (
         patch("munin.core.ingest._load_sources") as mock_load,
         patch("munin.core.ingest.get_pool", return_value=mock_pool),
-        patch("munin.core.ingest.embed_fn", return_value=[0.1] * 768) as mock_embed,
+        patch("munin.core.ingest.embed_batch_fn", return_value=[[0.1] * 768]) as mock_embed,
     ):
         mock_load.return_value = [
             MagicMock(path=docs_dir, globs=["**/*.md"], project="proj", scope=None, tags=[])

@@ -12,7 +12,7 @@ from typing import Any
 from munin.core.chunker import chunk_markdown
 from munin.core.config import MuninConfig, load
 from munin.core.db import get_pool
-from munin.core.embed import embed as embed_fn
+from munin.core.embed import embed_batch as embed_batch_fn
 from munin.core.manifest import load_sources as _load_sources
 
 logger = logging.getLogger(__name__)
@@ -165,20 +165,10 @@ def ingest(
                                     chunk.content.encode()
                                 ).hexdigest()
 
-                                # DR-003: use fixed-precision formatting instead of
-                                # repr() which can emit 'nan'/'inf' — invalid
-                                # pgvector literals.
-                                vec = embed_fn(chunk.content, config=cfg)
-                                vec_str = (
-                                    "[" + ",".join(f"{v:.8g}" for v in vec) + "]"
-                                )
-
-                                # DR-006 + DR-007: single connection for SELECT,
-                                # DELETE, and upsert to keep all three atomic.
-                                # upsert_thought ON CONFLICT only updates tags/
-                                # metadata — not content or embedding — so a
-                                # DELETE before upsert is still required when
-                                # content has changed.
+                                # US-005: fingerprint check BEFORE embed.
+                                # SELECT the existing row to determine if content
+                                # has changed. Only embed when the chunk is new or
+                                # its content differs from what is stored.
                                 with pool.connection() as conn:
                                     with conn.transaction():
                                         with conn.cursor() as cur:
@@ -211,11 +201,35 @@ def ingest(
                                                 existing_id is not None
                                                 and existing_fingerprint == fingerprint
                                             ):
-                                                # Content unchanged — skip.
+                                                # Content unchanged — skip WITHOUT
+                                                # making any embedding HTTP call.
                                                 chunks_skipped += 1
                                                 continue
 
-                                            # New chunk or content has changed.
+                                            # New chunk or content has changed —
+                                            # embed only what is needed (US-005).
+                                            # US-005: use embed_batch_fn for batching
+                                            # and client reuse; pass a single-element
+                                            # list so the call is consistent.
+                                            vecs = embed_batch_fn(
+                                                [chunk.content], config=cfg
+                                            )
+                                            vec = vecs[0]
+                                            # DR-003: use fixed-precision formatting
+                                            # instead of repr() which can emit
+                                            # 'nan'/'inf' — invalid pgvector literals.
+                                            vec_str = (
+                                                "["
+                                                + ",".join(f"{v:.8g}" for v in vec)
+                                                + "]"
+                                            )
+
+                                            # DR-006 + DR-007: single connection for
+                                            # SELECT, DELETE, and upsert to keep all
+                                            # three atomic. upsert_thought ON CONFLICT
+                                            # only updates tags/metadata — not content
+                                            # or embedding — so a DELETE before upsert
+                                            # is still required when content changed.
                                             if existing_id is not None:
                                                 logger.debug(
                                                     "ingest: updating changed chunk"
