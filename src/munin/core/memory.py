@@ -13,10 +13,19 @@ from uuid import UUID
 from munin.core import scope as _scope
 from munin.core.config import MuninConfig, load
 from munin.core.db import get_pool
-from munin.core.embed import embed
+from munin.core.embed import build_embed_text, embed
 from munin.core.errors import MuninError
+from munin.core.rerank import (
+    MuninRerankUnavailable,
+)
+from munin.core.rerank import (
+    rerank as _rerank,
+)
 
 logger = logging.getLogger(__name__)
+
+# P2-fix: rate-limit the "reranker unavailable" warning to once per process.
+_rerank_warn_once_done: bool = False
 
 # ---------------------------------------------------------------------------
 # MMR helper
@@ -63,10 +72,22 @@ def _mmr_rerank(
     if not candidates or k <= 0:
         return []
 
-    # Normalise fused relevance scores to [0, 1] so they are on the same scale
-    # as cosine similarity used for the diversity term.
-    max_score = max(c.fused_score for c in candidates) or 1.0
-    rel: dict[UUID, float] = {c.id: c.fused_score / max_score for c in candidates}
+    # P2-fix(6): use rerank_score as relevance term when available — the cross-encoder
+    # signal is more accurate than the hybrid fused_score and must not be discarded
+    # by MMR.  Fall back to fused_score when rerank_score is None (rerank disabled
+    # or sidecar degraded).
+    def _relevance(c: ThoughtResult) -> float:
+        return c.rerank_score if c.rerank_score is not None else c.fused_score
+
+    # Normalise relevance scores to [0, 1] so they are on the same scale as
+    # cosine similarity used for the diversity term.
+    raw_scores = [_relevance(c) for c in candidates]
+    max_score = max(raw_scores) or 1.0
+    min_score = min(raw_scores)
+    score_range = max_score - min_score or 1.0
+    rel: dict[UUID, float] = {
+        c.id: (_relevance(c) - min_score) / score_range for c in candidates
+    }
 
     remaining = list(candidates)
     selected: list[ThoughtResult] = []
@@ -99,13 +120,17 @@ class ThoughtResult:
     """A single recalled thought with its similarity score.
 
     Attributes:
-        similarity:  Raw cosine similarity between the query embedding and the
-                     thought embedding.  Preserved for backward-compatible display
-                     and CLI output.
-        fused_score: Multi-signal final score from match_thoughts() — weighted
-                     blend of RRF rank fusion, recency (last_hit_at), and
-                     hit_count.  This is the authoritative ranking signal; MMR
-                     re-ranking uses this value as its relevance term.
+        similarity:   Raw cosine similarity between the query embedding and the
+                      thought embedding.  Preserved for backward-compatible display
+                      and CLI output.
+        fused_score:  Multi-signal final score from match_thoughts() — weighted
+                      blend of RRF rank fusion, recency (last_hit_at), and
+                      hit_count.  This is the authoritative ranking signal.
+        rerank_score: Cross-encoder relevance score from the bge-reranker-v2-m3
+                      sidecar (P2-4).  None when reranking is disabled or the
+                      sidecar degraded to hybrid order.  When present, MMR uses
+                      this as its relevance term instead of fused_score so the
+                      cross-encoder signal is not discarded by the diversity pass.
     """
 
     id: UUID
@@ -117,6 +142,80 @@ class ThoughtResult:
     similarity: float
     fused_score: float
     created_at: datetime
+    rerank_score: float | None = None
+
+
+def _recall_history(
+    query: str,
+    *,
+    resolved_project: str,
+    scope: str | None,
+    match_limit: int,
+    threshold: float,
+    cfg: MuninConfig,
+) -> list[ThoughtResult]:
+    """History-mode recall: bypasses valid_to IS NULL so expired rows are included.
+
+    P2-3: This is an audit / point-in-time path.  RRF and MMR are not applied;
+    results are ranked by descending cosine similarity only.  Superseded and live
+    rows are returned together.
+
+    Does NOT bump hit_count — history lookups are read-only audit operations.
+    """
+    vec = embed(query, config=cfg)
+    vec_str = "[" + ",".join(f"{v:.8g}" for v in vec) + "]"
+
+    pool = get_pool(cfg)
+    pool.open(wait=True)
+
+    results: list[ThoughtResult] = []
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SET LOCAL hnsw.ef_search = 100")
+            cur.execute("SET LOCAL hnsw.iterative_scan = 'relaxed_order'")
+            cur.execute(
+                "SELECT id, content, project, scope, tags, metadata,"
+                " (1 - (embedding <=> %s::vector))::float AS similarity,"
+                " created_at, updated_at,"
+                " (1 - (embedding <=> %s::vector))::double precision AS score"
+                " FROM thoughts"
+                " WHERE project = %s"
+                " AND (%s::text IS NULL OR scope = %s)"
+                " AND (1 - (embedding <=> %s::vector)) >= %s"
+                " ORDER BY embedding <=> %s::vector"
+                " LIMIT %s",
+                (
+                    vec_str,
+                    vec_str,
+                    resolved_project,
+                    scope,
+                    scope,
+                    vec_str,
+                    threshold,
+                    vec_str,
+                    match_limit,
+                ),
+            )
+            for row in cur.fetchall():
+                results.append(
+                    ThoughtResult(
+                        id=row[0],
+                        content=row[1],
+                        project=row[2],
+                        scope=row[3],
+                        tags=list(row[4]) if row[4] else [],
+                        metadata=dict(row[5]) if row[5] else {},
+                        similarity=float(row[6]),
+                        fused_score=float(row[9]),
+                        created_at=row[7],
+                    )
+                )
+
+    logger.debug(
+        "recall(history): project=%s returned %d rows (including expired)",
+        resolved_project, len(results),
+    )
+    return results
 
 
 def recall(
@@ -126,6 +225,7 @@ def recall(
     scope: str | None = None,
     limit: int | None = None,
     threshold: float = 0.0,
+    include_history: bool | None = None,
     config: MuninConfig | None = None,
 ) -> list[ThoughtResult]:
     """Return thoughts most similar to query, filtered by project and optional scope.
@@ -141,13 +241,19 @@ def recall(
     for MMR, the RPC is asked for match_limit * 5 rows; MMR then selects the final
     match_limit.  When MMR is disabled the pure fused ranking is returned unchanged.
 
+    When include_history is True (or config.recall_include_history is True), the
+    valid_to IS NULL filter is bypassed and superseded / expired rows are included
+    in results alongside live rows.  This is an audit / history path — RRF and
+    MMR are not applied; results are ordered by descending cosine similarity only.
+
     Config fields read (see MuninConfig):
-        recall_w_rrf        — weight for fused RRF relevance signal (default 0.7)
-        recall_w_recency    — weight for recency signal (default 0.2)
-        recall_w_hits       — weight for normalised hit_count (default 0.1)
-        recall_rrf_k        — RRF k constant (default 60)
-        recall_mmr_enabled  — enable MMR re-ranking (default True)
-        recall_mmr_lambda   — MMR relevance/diversity trade-off (default 0.7)
+        recall_w_rrf            — weight for fused RRF relevance signal (default 0.7)
+        recall_w_recency        — weight for recency signal (default 0.2)
+        recall_w_hits           — weight for normalised hit_count (default 0.1)
+        recall_rrf_k            — RRF k constant (default 60)
+        recall_mmr_enabled      — enable MMR re-ranking (default True)
+        recall_mmr_lambda       — MMR relevance/diversity trade-off (default 0.7)
+        recall_include_history  — include expired/superseded rows (default False)
 
     Args:
         query: Natural-language query to embed (dense leg) and search (lexical leg).
@@ -155,11 +261,15 @@ def recall(
         scope: Optional scope label to further restrict results.
         limit: Maximum number of results. Defaults to config.default_limit.
         threshold: Minimum cosine similarity for the dense leg (0.0–1.0).
+        include_history: Override for recall_include_history config flag.  When True,
+            bypasses valid_to IS NULL and returns all rows including expired ones.
+            Defaults to None (use config value).
         config: Optional config override; uses load() if not provided.
 
     Returns:
         List of ThoughtResult (length ≤ limit), ordered by MMR score when MMR is
-        enabled, or by descending hybrid score when MMR is disabled.
+        enabled, or by descending hybrid score when MMR is disabled.  In history
+        mode, ordered by descending cosine similarity.
 
     Raises:
         MuninError: If project cannot be determined.
@@ -173,6 +283,22 @@ def recall(
         )
 
     match_limit = limit if limit is not None else cfg.default_limit
+
+    # P2-3: history mode — bypass valid_to IS NULL so expired/superseded rows are
+    # included.  The param takes priority over the config flag when explicitly passed.
+    _include_history = (
+        include_history if include_history is not None else cfg.recall_include_history
+    )
+
+    if _include_history:
+        return _recall_history(
+            query,
+            resolved_project=resolved_project,
+            scope=scope,
+            match_limit=match_limit,
+            threshold=threshold,
+            cfg=cfg,
+        )
 
     # When MMR is enabled we need a larger candidate pool so the diversity pass
     # has meaningful choices.  We ask the RPC for match_limit * 5 candidates
@@ -246,6 +372,59 @@ def recall(
                     )
                 )
 
+            # P2-4: cross-encoder rerank stage — between RRF fusion and MMR.
+            # Takes top-N candidates (recall_rerank_top_n), scores (query, doc) pairs
+            # via the bge-reranker-v2-m3 sidecar, and reorders before MMR.
+            # Flag OFF → no-op (exact pre-rerank behaviour preserved).
+            # Sidecar unreachable → graceful degrade to hybrid order with a warning.
+            # P2-fix(7): history path returns early above (lines 273-281), so this
+            # block is only reached on the normal (non-history) path — no explicit
+            # guard needed here, but noted for clarity.
+            if cfg.recall_rerank_enabled and len(candidates) > 1:
+                global _rerank_warn_once_done
+                rerank_candidates = candidates[: cfg.recall_rerank_top_n]
+                # P3-fix(C6): cap each document to recall_rerank_doc_chars before
+                # sending to the cross-encoder.  bge-reranker-v2-m3 truncates
+                # internally beyond ~512 tokens; sending full content (avg 400–1200
+                # chars) wastes CPU and causes latency on CPU-only inference.
+                # Default cap = 512 chars ≈ 128 tokens — no quality loss.
+                _doc_cap = cfg.recall_rerank_doc_chars
+                docs = [c.content[:_doc_cap] for c in rerank_candidates]
+                try:
+                    ranked_indices, ranked_scores = _rerank(
+                        query, docs, rerank_url=cfg.rerank_url
+                    )
+                    # Populate rerank_score on each reranked candidate so MMR can
+                    # use the cross-encoder signal as its relevance term (fix 6).
+                    reranked: list[ThoughtResult] = []
+                    for rank_pos, orig_idx in enumerate(ranked_indices):
+                        c = rerank_candidates[orig_idx]
+                        c.rerank_score = ranked_scores[rank_pos]
+                        reranked.append(c)
+                    # F4 fix: discard the unreranked tail when reranking is active.
+                    # The tail has rerank_score=None so _relevance() falls back to
+                    # fused_score ([0,1]); mixing that with cross-encoder logits
+                    # (~[-12,+3]) in a single min/max normalization pushes every
+                    # fused_score tail item near 1.0, inverting the reranker.
+                    # Setting candidates = reranked keeps the working set within
+                    # one scale.  MMR k is bounded by min(match_limit, len(reranked))
+                    # so we can't produce fewer results than reranked (already
+                    # capped at recall_rerank_top_n which defaults to 25 > typical
+                    # limit of 10).
+                    candidates = reranked
+                    logger.debug(
+                        "recall: reranker reordered top-%d candidates",
+                        len(ranked_indices),
+                    )
+                except MuninRerankUnavailable as exc:
+                    # P2-fix (rate-limit): log the degradation warning once per process
+                    # to avoid log spam when the sidecar is persistently down.
+                    if not _rerank_warn_once_done:
+                        logger.warning(
+                            "recall: reranker unavailable, degrading to hybrid order: %s", exc
+                        )
+                        _rerank_warn_once_done = True
+
             if mmr_enabled and len(candidates) > 1:
                 # Fetch raw embeddings for the candidate set so MMR can compute
                 # pairwise cosine similarity.  A single query by UUID array is
@@ -270,7 +449,11 @@ def recall(
                     candidates,
                     embeddings,
                     lambda_=cfg.recall_mmr_lambda,
-                    k=match_limit,
+                    # When reranking is active the working set is the reranked
+                    # top-N (<= rerank_top_n), so bound k to what's available
+                    # rather than the caller's limit to honour the contract
+                    # explicitly instead of relying on the MMR loop running dry.
+                    k=min(match_limit, len(candidates)),
                 )
             else:
                 # MMR disabled or single candidate: return pure fused ranking.
@@ -302,6 +485,10 @@ class Thought:
     metadata: dict[str, Any]
     created_at: datetime
     updated_at: datetime
+    # B1: lifecycle fields added (P2-2 / P2-3); None = live/active row.
+    superseded_by: UUID | None = None
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
 
 
 def list_projects(
@@ -314,6 +501,7 @@ def list_projects(
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT project, COUNT(*) FROM thoughts"
+                " WHERE superseded_by IS NULL AND valid_to IS NULL"
                 " GROUP BY project ORDER BY project"
             )
             rows: list[tuple[str, int]] = [
@@ -334,7 +522,8 @@ def show(
     with pool.connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, content, project, scope, tags, metadata, created_at, updated_at"
+                "SELECT id, content, project, scope, tags, metadata, created_at, updated_at,"
+                " superseded_by, valid_from, valid_to"
                 " FROM thoughts WHERE id = %s",
                 (uid,),
             )
@@ -350,6 +539,9 @@ def show(
         metadata=dict(row[5]),
         created_at=row[6],
         updated_at=row[7],
+        superseded_by=UUID(str(row[8])) if row[8] is not None else None,
+        valid_from=row[9],
+        valid_to=row[10],
     )
 
 
@@ -360,16 +552,22 @@ def remember(
     scope: str | None = None,
     tags: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
+    heading: str | None = None,
     config: MuninConfig | None = None,
 ) -> UUID:
     """Store a thought, auto-detecting the current git project if needed.
 
     Args:
-        content: The thought content to store.
+        content: The thought content to store (raw; returned unchanged by recall).
         project: Project name. Resolved from git root if not provided.
         scope: Optional scope label.
         tags: Optional list of string tags. Defaults to [].
         metadata: Optional JSON-serialisable metadata dict. Defaults to {}.
+        heading: Optional section heading embedded into the vector context prefix
+            (P3-1).  When provided it is also written into metadata['heading'] so
+            the prefix can be reconstructed at P3-3 reindex time from stored columns.
+            When absent, metadata.get('heading') is used as a fallback (for callers
+            that already store heading in metadata).
         config: Optional config override; uses load() if not provided.
 
     Returns:
@@ -389,14 +587,105 @@ def remember(
     resolved_tags: list[str] = tags if tags is not None else []
     resolved_metadata: dict[str, Any] = metadata if metadata is not None else {}
 
-    logger.info("remember: project=%s content_len=%d", resolved_project, len(content))
-    vec = embed(content, config=cfg)
+    # P3-1: heading param takes precedence; fall back to metadata['heading'] so
+    # callers that already store heading in metadata get context without changes.
+    resolved_heading: str | None = heading or resolved_metadata.get("heading")
+
+    # P3-1: build contextual prefixed text for the embedder.  The raw *content*
+    # is what gets stored in the DB and returned by recall/show — the prefix is
+    # ONLY sent to the embed server so the vector carries section/source context.
+    embed_text = build_embed_text(
+        content,
+        project=resolved_project,
+        scope=scope,
+        tags=resolved_tags,
+        heading=resolved_heading,
+    )
+
+    logger.info(
+        "remember: project=%s content_len=%d embed_text_len=%d",
+        resolved_project, len(content), len(embed_text),
+    )
+    vec = embed(embed_text, config=cfg)
     # DR-003: fixed-precision formatting avoids repr() emitting 'nan'/'inf'.
     embedding_str = "[" + ",".join(f"{v:.8g}" for v in vec) + "]"
 
     pool = get_pool(cfg)
     pool.open(wait=True)
 
+    # P2-1 / P2-2: Similarity gate — ANN-check top-1 in-project neighbour.
+    #
+    # The two behaviours share a single ANN query and act on the result by
+    # similarity band:
+    #
+    #   cosine >= dedup_threshold  (default 0.95)
+    #       → NOOP / dedup skip: the new thought is virtually identical to the
+    #         existing one.  Return the existing id without inserting.
+    #         (P2-1 — requires remember_dedup_enabled)
+    #
+    #   supersede_threshold <= cosine < dedup_threshold  (default 0.80–0.95)
+    #       → Supersession: the new thought is a real update that conflicts with
+    #         the older one.  Insert the new thought first, then retire the old
+    #         row by setting superseded_by = new.id.  The retired row stays in
+    #         the DB but is excluded from default recall (match_thoughts WHERE
+    #         superseded_by IS NULL added in sql/010).
+    #         (P2-2 — requires remember_supersede_enabled)
+    #
+    #   cosine < supersede_threshold
+    #       → Genuinely new thought — insert without touching any existing row.
+    #
+    # When both flags are OFF, skip straight to insert (prior behaviour).
+    # When only dedup is ON: exact-ish duplicates are skipped; similar-but-new
+    # thoughts insert without superseding (safe degradation).
+    # When only supersede is ON: the dedup check is bypassed; similar thoughts
+    # still insert, and the old row is retired if in range.
+    _ann_neighbour: Any = None
+    if cfg.remember_dedup_enabled or cfg.remember_supersede_enabled:
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, 1 - (embedding <=> %s::vector) AS cosine"
+                    " FROM thoughts"
+                    " WHERE project = %s"
+                    " AND superseded_by IS NULL"
+                    " AND valid_to IS NULL"
+                    " ORDER BY embedding <=> %s::vector"
+                    " LIMIT 1",
+                    (embedding_str, resolved_project, embedding_str),
+                )
+                _ann_neighbour = cur.fetchone()
+
+    if _ann_neighbour is not None:
+        neighbour_id = UUID(str(_ann_neighbour[0]))
+        cosine = float(_ann_neighbour[1])
+
+        # P2-1: exact-ish duplicate — skip insert entirely.
+        if cfg.remember_dedup_enabled and cosine >= cfg.remember_dedup_threshold:
+            logger.info(
+                "remember: dedup skip — new thought is near-duplicate of %s"
+                " (cosine=%.4f >= threshold=%.4f); project=%s",
+                neighbour_id, cosine, cfg.remember_dedup_threshold, resolved_project,
+            )
+            return neighbour_id
+
+        # P2-2: similar-but-different — insert new thought, then retire the old.
+        # Fires when cosine falls in [supersede_threshold, dedup_threshold).
+        # The upper bound (< dedup_threshold) is enforced unconditionally so that
+        # a near-identical restatement (cosine >= dedup_threshold) is always a
+        # dedup no-op, never a supersession — regardless of which flags are on.
+        _will_supersede = (
+            cfg.remember_supersede_enabled
+            and cosine >= cfg.remember_supersede_threshold
+            and cosine < cfg.remember_dedup_threshold
+        )
+    else:
+        neighbour_id = None
+        cosine = 0.0
+        _will_supersede = False
+
+    # P2-fix(4): upsert + supersession UPDATE share a single connection/transaction
+    # so a crash between them cannot leave both rows live.  This also reduces the
+    # per-remember connection churn from 3 connections to 2 (ANN + insert/retire).
     with pool.connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
@@ -412,9 +701,31 @@ def remember(
             )
             row = cur.fetchone()
 
-    if row is None:
-        raise MuninError("upsert_thought returned no row")
-    return UUID(str(row[0]))
+            if row is None:
+                raise MuninError("upsert_thought returned no row")
+            new_id = UUID(str(row[0]))
+
+            # P2-2: retire the superseded row atomically in the same transaction.
+            # P2-3: stamp valid_to=now() so bitemporal queries exclude expired rows.
+            # F6: guard with AND superseded_by IS NULL so two concurrent remember()
+            # calls cannot double-retire the same row if both see it as the ANN
+            # neighbour before either completes the UPDATE.
+            if _will_supersede and neighbour_id is not None and neighbour_id != new_id:
+                cur.execute(
+                    "UPDATE thoughts"
+                    " SET superseded_by = %s, valid_to = now()"
+                    " WHERE id = %s AND superseded_by IS NULL",
+                    (new_id, neighbour_id),
+                )
+                logger.info(
+                    "remember: superseded %s with %s"
+                    " (cosine=%.4f in [%.4f, %.4f)); project=%s",
+                    neighbour_id, new_id,
+                    cosine, cfg.remember_supersede_threshold, cfg.remember_dedup_threshold,
+                    resolved_project,
+                )
+
+    return new_id
 
 
 def forget(

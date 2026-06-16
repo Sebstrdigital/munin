@@ -1,0 +1,163 @@
+{
+  "project": "munin",
+  "branchName": "takt/munin-improvements",
+  "description": "Phase 1 of the munin improvement plan: retrieval quality (hybrid dense+lexical search with RRF, multi-signal ranking, MMR diversity, ef_search/iterative-scan tuning) plus ingest embedding bug fixes. No new dependencies, no reindex. Includes a migration bootstrap script to fix the recurring 'migrations not applied' blocker.",
+  "userStories": [
+    {
+      "id": "US-001",
+      "title": "Migration bootstrap script (scripts/migrate.sh)",
+      "description": "As a developer, I want a single command that applies all sql/NNN_*.sql migrations in order against the running compose stack, so migrations are reliably applied before any verification or downstream story.",
+      "acceptanceCriteria": [
+        "Running scripts/migrate.sh applies every sql/NNN_*.sql file in ascending numeric order against the Postgres container on port 5433",
+        "Re-running scripts/migrate.sh on an already-migrated database completes without error (idempotent or clearly skips already-applied migrations)",
+        "The script exits non-zero and prints the failing file name if any migration errors",
+        "After running, the thoughts table and existing RPC functions are present (verified via a psql information_schema query)",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 1,
+      "size": "small",
+      "complexity": "complex",
+      "passes": true,
+      "startTime": 1781527281,
+      "endTime": 1781527635,
+      "dependsOn": [],
+      "knownIssues": [
+        "Recurring blocker: DB migrations historically not applied before worker verification (retro alert, confirmed 2026-04-12..04-13)",
+        "psycopg_pool not always pre-installed in dev env; script should use psql/docker exec, not Python"
+      ]
+    },
+    {
+      "id": "US-002",
+      "title": "Add lexical tsvector column + GIN index for hybrid search",
+      "description": "As the retrieval layer, I need a full-text lexical representation of each thought so hybrid search can combine dense vectors with keyword matching.",
+      "acceptanceCriteria": [
+        "A new migration sql/006_hybrid_search.sql adds a tsvector representation of thought content (generated/stored column) plus a GIN index",
+        "Existing rows are backfilled so every thought has a non-null tsvector after migration",
+        "The migration applies cleanly via scripts/migrate.sh against a database that already contains the current ~5k thoughts, with zero rows lost (row count before == row count after)",
+        "A plain to_tsquery lexical search for an exact token (e.g. a function name) returns the thought containing that token",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 2,
+      "size": "small",
+      "complexity": "complex",
+      "passes": true,
+      "startTime": 1781527635,
+      "endTime": 1781529370,
+      "dependsOn": [
+        "US-001"
+      ],
+      "knownIssues": [
+        "Must be non-destructive: ALTER TABLE ADD COLUMN only, no data rewrite that risks existing embeddings"
+      ]
+    },
+    {
+      "id": "US-003",
+      "title": "Rewrite match_thoughts: hybrid RRF + multi-signal ranking + ef tuning",
+      "description": "As an agent calling recall, I want results ranked by fused dense+lexical relevance combined with recency and historical usefulness, so the most relevant and useful thoughts surface first.",
+      "acceptanceCriteria": [
+        "match_thoughts fuses a dense (vector cosine) candidate list and a lexical (tsvector) candidate list using Reciprocal Rank Fusion (k configurable, default ~60)",
+        "Final ordering applies a weighted multi-signal score combining fused relevance with recency (created_at/last_hit_at) and hit_count, with weights read from config (defaults documented)",
+        "The function sets hnsw.ef_search (default 100) and enables hnsw.iterative_scan via SET LOCAL within the query path",
+        "A recall query for an exact identifier returns the matching thought even when its embedding similarity alone would rank it outside top-k (hybrid wins over pure-cosine)",
+        "A frequently-hit recent thought ranks above an equally-similar stale, never-hit thought",
+        "Existing recall behaviour (project/scope filtering) is preserved; no thought from another project leaks into results",
+        "memory.py passes the raw query text (for lexical leg) and ranking weights through to the RPC",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 3,
+      "size": "medium",
+      "complexity": "complex",
+      "passes": true,
+      "startTime": 1781529687,
+      "endTime": 1781530283,
+      "dependsOn": [
+        "US-002",
+        "US-006"
+      ],
+      "knownIssues": [
+        "hit_count/last_hit_at columns already exist (sql/005) but were never read into ranking — this story activates them"
+      ]
+    },
+    {
+      "id": "US-004",
+      "title": "MMR diversity re-ranking over hybrid candidates",
+      "description": "As an agent calling recall, I want near-duplicate results suppressed so the top-k covers distinct information instead of paraphrases of one thought.",
+      "acceptanceCriteria": [
+        "After fused ranking, a Maximal Marginal Relevance pass re-orders candidates trading relevance against diversity, with lambda configurable (default documented)",
+        "For a project containing several near-duplicate thoughts, the top-k returned contains distinct thoughts rather than multiple paraphrases of the same one",
+        "MMR can be disabled via config, and when disabled recall returns the pure fused ranking unchanged",
+        "Recall result count still respects the requested limit/k",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 4,
+      "size": "small",
+      "complexity": "complex",
+      "passes": true,
+      "startTime": 1781530283,
+      "endTime": 1781530696,
+      "dependsOn": [
+        "US-003"
+      ],
+      "knownIssues": []
+    },
+    {
+      "id": "US-005",
+      "title": "Fix ingest embedding: fingerprint-before-embed, batching, client reuse",
+      "description": "As a developer ingesting content, I want unchanged content skipped before embedding and chunks embedded in batches over a reused HTTP client, so re-ingestion is fast and wasteful embed calls are eliminated.",
+      "acceptanceCriteria": [
+        "Re-ingesting an unchanged source makes zero embedding HTTP calls (the unchanged-content fingerprint check runs before the embed call, not after)",
+        "A fresh ingest of multiple chunks sends batched embedding requests via embed_batch() rather than one HTTP POST per chunk",
+        "Embedding requests during a single ingest reuse one httpx client instead of opening a new client per call",
+        "Ingested thoughts are stored with correct embeddings (a recall for ingested content still returns it) — no regression in stored vectors",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 5,
+      "size": "medium",
+      "complexity": "complex",
+      "passes": true,
+      "startTime": 1781529687,
+      "endTime": 1781529952,
+      "dependsOn": [
+        "US-001",
+        "US-006"
+      ],
+      "knownIssues": [
+        "Current bug: ingest.py fingerprint/unchanged check runs AFTER embed (line ~171 vs ~210-216), so unchanged re-ingest re-embeds everything",
+        "embed_batch() exists but has zero production callers"
+      ]
+    },
+    {
+      "id": "US-006",
+      "title": "Isolate test DB (munin_test) + TRUNCATE safety guard",
+      "description": "Integration tests truncate the live munin DB. Create an isolated munin_test database and a hard guard so pytest can never wipe production memory.",
+      "acceptanceCriteria": [
+        "A separate munin_test database exists in the same Postgres container with the full schema applied",
+        "scripts/migrate.sh accepts a target database via env (e.g. MUNIN_PG_DB, default munin) so it can migrate munin_test",
+        "tests/integration/conftest.py points MUNIN_DB_URL at munin_test; integration tests pass against it",
+        "Unit tests that perform real DB writes target munin_test, not munin (test_config default-URL assertions stay unchanged)",
+        "Hard guard: the truncate fixture refuses to TRUNCATE unless the connected database name is munin_test, raising an explicit error otherwise",
+        "A full pytest run leaves the production munin DB row count unchanged (still 4881)",
+        "Typecheck passes",
+        "Tests pass"
+      ],
+      "priority": 2,
+      "size": "medium",
+      "complexity": "complex",
+      "passes": true,
+      "startTime": 1781529397,
+      "endTime": 1781529687,
+      "dependsOn": [
+        "US-001"
+      ],
+      "knownIssues": [
+        "Root cause of data-loss incident: tests/integration/conftest.py autouse TRUNCATE ran against prod DB localhost:5433/munin"
+      ]
+    }
+  ],
+  "waves": []
+}

@@ -1,26 +1,35 @@
--- Migration: 008_fix_recency_norm.sql
--- Fix: recency normalization could exceed [0,1] when a never-hit thought's
--- created_at is newer than every row's last_hit_at.
+-- ---------------------------------------------------------------------------
+-- Migration 011: Bi-temporal validity — valid_from / valid_to columns
 --
--- Root cause in 007: stats CTE computed
---   max_ts = MAX(last_hit_at)   -- only considers rows WITH a last_hit_at
---   min_ts = MIN(created_at)    -- only considers created_at
--- but the per-row numerator uses COALESCE(last_hit_at, created_at).
--- A never-hit thought with a recent created_at produces a numerator greater
--- than max_ts, yielding recency_signal > 1.0.
+-- Background: P2-3 adds non-destructive supersession with queryable history.
+-- Two timestamptz columns capture the validity window of every thought:
+--   valid_from  — when the thought became live (default: row creation time).
+--   valid_to    — when the thought was superseded / expired (NULL = still live).
 --
--- Fix: compute max_ts and min_ts over the SAME expression used per-row:
---   max_ts = MAX(COALESCE(last_hit_at, created_at))
---   min_ts = MIN(COALESCE(last_hit_at, created_at))
--- This guarantees the per-row value is always within [min_ts, max_ts],
--- so recency_signal stays in [0,1].
+-- Default recall already excludes superseded rows (sql/010 WHERE superseded_by
+-- IS NULL).  This migration adds a second filter: valid_to IS NULL, so rows
+-- retired via the bitemporal path are also excluded by default.  History-mode
+-- queries bypass this filter and can return expired rows.
 --
--- Signature is identical to 007, so CREATE OR REPLACE would be sufficient —
--- but we add an explicit DROP first for chain re-runnability (guardrail
--- requirement: sql/009 already uses DROP-first; mirror the pattern here so
--- 008 can be re-applied standalone without error).
+-- Existing embeddings are NOT touched.  Both columns are additive and are
+-- back-filled by Postgres column defaults so zero rows are lost.
+--
+-- Re-runnable: the ADD COLUMN statements use IF NOT EXISTS.  match_thoughts is
+-- dropped by its full 11-arg signature before recreation (same pattern as 010).
 -- ---------------------------------------------------------------------------
 
+-- Step 1: Add valid_from (NOT NULL, default now() — back-filled on existing rows).
+ALTER TABLE thoughts
+    ADD COLUMN IF NOT EXISTS valid_from  timestamptz NOT NULL DEFAULT now(),
+    ADD COLUMN IF NOT EXISTS valid_to    timestamptz NULL;
+
+-- Step 2: Partial index for fast exclusion of expired rows.
+CREATE INDEX IF NOT EXISTS idx_thoughts_valid
+    ON thoughts (project)
+    WHERE valid_to IS NULL;
+
+-- Step 3: Drop the old 11-arg match_thoughts signature from sql/010,
+--         then recreate it with the additional valid_to IS NULL filter.
 DROP FUNCTION IF EXISTS match_thoughts(
     vector(768),
     text,
@@ -35,7 +44,7 @@ DROP FUNCTION IF EXISTS match_thoughts(
     float
 );
 
-CREATE OR REPLACE FUNCTION match_thoughts(
+CREATE FUNCTION match_thoughts(
     query_embedding       vector(768),
     query_text            text,
     p_project             text,
@@ -57,7 +66,8 @@ RETURNS TABLE (
     metadata    jsonb,
     similarity  float,
     created_at  timestamptz,
-    updated_at  timestamptz
+    updated_at  timestamptz,
+    score       double precision
 )
 -- hnsw.ef_search and hnsw.iterative_scan are set by the Python caller via
 -- SET LOCAL within the same transaction before invoking this function.
@@ -69,7 +79,9 @@ BEGIN
     RETURN QUERY
     WITH
     -- -----------------------------------------------------------------------
-    -- Dense leg: top-N by cosine similarity, project/scope filtered
+    -- Dense leg: top-N by cosine similarity, project/scope filtered.
+    -- P2-2: superseded rows excluded from default recall.
+    -- P2-3: expired rows (valid_to IS NOT NULL) excluded from default recall.
     -- -----------------------------------------------------------------------
     dense AS (
         SELECT
@@ -80,12 +92,16 @@ BEGIN
             t.project = p_project
             AND (p_scope IS NULL OR t.scope = p_scope)
             AND (1 - (t.embedding <=> query_embedding)) >= similarity_threshold
+            AND t.superseded_by IS NULL
+            AND t.valid_to IS NULL
         ORDER BY t.embedding <=> query_embedding
         LIMIT candidate_limit
     ),
 
     -- -----------------------------------------------------------------------
     -- Lexical leg: top-N by ts_rank, project/scope filtered.
+    -- P2-2: superseded rows excluded from default recall.
+    -- P2-3: expired rows excluded from default recall.
     -- Only runs when query_text is non-empty.
     -- -----------------------------------------------------------------------
     lexical AS (
@@ -101,6 +117,8 @@ BEGIN
             AND query_text IS NOT NULL
             AND query_text <> ''
             AND t.content_tsv @@ websearch_to_tsquery('english', query_text)
+            AND t.superseded_by IS NULL
+            AND t.valid_to IS NULL
         ORDER BY ts_rank(t.content_tsv, websearch_to_tsquery('english', query_text)) DESC
         LIMIT candidate_limit
     ),
@@ -145,9 +163,9 @@ BEGIN
             t.metadata                                    AS s_metadata,
             t.created_at                                  AS s_created_at,
             t.updated_at                                  AS s_updated_at,
-            -- Cosine similarity for the output column
+            -- Cosine similarity for the output column (backward-compatible display)
             (1 - (t.embedding <=> query_embedding))::float AS s_cosine_sim,
-            -- Multi-signal final score
+            -- Multi-signal final score (fused relevance + recency + hits)
             (
                 w_rrf * (
                     CASE WHEN s.max_rrf > 0
@@ -168,25 +186,25 @@ BEGIN
                     THEN t.hit_count::float / s.max_hits
                     ELSE 0.0 END
                 )
-            ) AS s_final_score
+            )::double precision                           AS s_final_score
         FROM fused f
-        JOIN thoughts t  ON t.id = f.thought_id
+        JOIN thoughts t ON t.id = f.thought_id
         CROSS JOIN stats s
     )
 
     SELECT
-        sc.s_id,
-        sc.s_content,
-        sc.s_project,
-        sc.s_scope,
-        sc.s_tags,
-        sc.s_metadata,
-        sc.s_cosine_sim,
-        sc.s_created_at,
-        sc.s_updated_at
-    FROM scored sc
-    ORDER BY sc.s_final_score DESC
+        s.s_id,
+        s.s_content,
+        s.s_project,
+        s.s_scope,
+        s.s_tags,
+        s.s_metadata,
+        s.s_cosine_sim,
+        s.s_created_at,
+        s.s_updated_at,
+        s.s_final_score
+    FROM scored s
+    ORDER BY s.s_final_score DESC
     LIMIT match_limit;
-
 END;
 $$;

@@ -43,6 +43,12 @@ def cfg() -> MuninConfig:
         # Disabling here keeps the mock cursor call-count predictable (no extra
         # embedding-fetch execute call).
         recall_mmr_enabled=False,
+        # Dedup disabled in unit tests — dedup behaviour is covered by test_remember.py.
+        # Disabling here keeps the mock cursor call-count predictable.
+        remember_dedup_enabled=False,
+        # Supersession disabled — covered by test_remember.py; disable here to keep
+        # mock cursor call-count predictable (no ANN pre-query).
+        remember_supersede_enabled=False,
     )
 
 

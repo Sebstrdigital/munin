@@ -2,20 +2,20 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 from unittest.mock import MagicMock
 from uuid import UUID
 
 import pytest
 
-from munin.core.memory import Thought, forget, list_projects, show
+from munin.core.memory import forget, list_projects, show
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
-_TS = datetime(2024, 6, 1, 12, 0, 0, tzinfo=timezone.utc)
+_TS = datetime(2024, 6, 1, 12, 0, 0, tzinfo=UTC)
 _ID = UUID("aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa")
 
 _FULL_ROW: tuple[Any, ...] = (
@@ -27,6 +27,10 @@ _FULL_ROW: tuple[Any, ...] = (
     {"k": "v"},
     _TS,
     _TS,
+    # B1: lifecycle columns — superseded_by, valid_from, valid_to
+    None,   # superseded_by (live row)
+    _TS,    # valid_from
+    None,   # valid_to (live)
 )
 
 
@@ -123,7 +127,7 @@ def test_show_accepts_string_id(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_show_scope_none(monkeypatch: pytest.MonkeyPatch) -> None:
     """show() sets scope=None when the column value is NULL."""
-    row = (_ID, "c", "p", None, [], {}, _TS, _TS)
+    row = (_ID, "c", "p", None, [], {}, _TS, _TS, None, _TS, None)
     pool = _make_pool(fetchone=row)
     monkeypatch.setattr("munin.core.memory.get_pool", lambda cfg=None: pool)
 

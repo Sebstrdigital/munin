@@ -75,6 +75,10 @@ def remember(
     scope: Annotated[str | None, typer.Option("--scope", "-s")] = None,
     tag: Annotated[list[str] | None, typer.Option("--tag", "-t")] = None,
     metadata: Annotated[list[str] | None, typer.Option("--metadata", "-m")] = None,
+    heading: Annotated[
+        str | None,
+        typer.Option("--heading", help="Section heading for contextual embedding prefix (P3-1)."),
+    ] = None,
     json_output: Annotated[bool, typer.Option("--json", help="Output as JSON.")] = False,
 ) -> None:
     """Store a memory in the local store."""
@@ -103,6 +107,7 @@ def remember(
             scope=scope,
             tags=list(tag) if tag else None,
             metadata=parsed_metadata if parsed_metadata else None,
+            heading=heading,
         )
     except Exception as e:
         _handle_error(e)
@@ -269,6 +274,21 @@ def _print_import_summary(imported: int, skipped: int, failed: int, json_output:
         typer.echo(f"Imported: {imported} | Skipped: {skipped} | Failed: {failed}")
 
 
+def _extract_heading(post: frontmatter.Post) -> str | None:
+    """Extract heading from front-matter 'title' key or first Markdown H1 line."""
+    title = post.get("title")
+    if title:
+        return str(title)
+    # Fall back to first H1 in content body.  Cast post.content to str because
+    # python-frontmatter types it as Any in some stubs.
+    body: str = str(post.content)
+    for line in body.splitlines():
+        stripped = line.strip()
+        if stripped.startswith("# "):
+            return str(stripped[2:].strip())
+    return None
+
+
 def _import_markdown(folder: Path, json_output: bool) -> None:
     imported = skipped = failed = 0
     for md_file in sorted(folder.glob("*.md")):
@@ -282,12 +302,16 @@ def _import_markdown(folder: Path, json_output: bool) -> None:
             scope = post.get("scope")
             tags = post.get("tags", [])
             metadata = post.get("metadata", {})
+            # M4: extract heading from front-matter title or first H1 so the
+            # contextual embedding prefix (P3-1) carries section context.
+            heading = _extract_heading(post)
             _remember(
                 content,
                 project=project,
                 scope=scope,
                 tags=list(tags) if tags else None,
                 metadata=metadata if isinstance(metadata, dict) else None,
+                heading=heading,
             )
             imported += 1
         except Exception as e:
@@ -359,6 +383,8 @@ def import_cmd(
             scope = row.get("scope")
             tags = row.get("tags")
             metadata = row.get("metadata")
+            # M4: read optional "heading" key from JSONL rows for contextual prefix.
+            heading: str | None = row.get("heading") or None
 
             try:
                 _remember(
@@ -367,6 +393,7 @@ def import_cmd(
                     scope=scope,
                     tags=list(tags) if tags else None,
                     metadata=metadata if isinstance(metadata, dict) else None,
+                    heading=heading,
                 )
                 imported += 1
             except Exception as e:

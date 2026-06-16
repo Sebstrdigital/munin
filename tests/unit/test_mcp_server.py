@@ -45,6 +45,7 @@ class TestRememberTool:
             scope=None,
             tags=None,
             metadata=None,
+            heading=None,
         )
 
     def test_passes_optional_fields(self) -> None:
@@ -59,6 +60,7 @@ class TestRememberTool:
             scope="session",
             tags=["a", "b"],
             metadata={"k": "v"},
+            heading=None,
         )
 
     def test_id_is_string(self) -> None:
@@ -135,6 +137,7 @@ class TestRecallTool:
             scope="session",
             limit=5,
             threshold=0.7,
+            include_history=False,
         )
 
     def test_multiple_results_count(self) -> None:

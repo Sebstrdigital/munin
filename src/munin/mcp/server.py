@@ -62,14 +62,21 @@ def remember(
     scope: str | None = None,
     tags: list[str] | None = None,
     metadata: dict[str, str] | None = None,
+    heading: str | None = None,
 ) -> dict[str, str]:
-    """Store a thought in munin memory."""
+    """Store a thought in munin memory.
+
+    heading: optional section heading passed to build_embed_text() (P3-1 contextual
+    prefix) so the stored vector carries source/section context.  Also persisted into
+    metadata['heading'] for future reindex.
+    """
     thought_id = memory.remember(
         content,
         project=_project,
         scope=scope,
         tags=tags,
         metadata=metadata,
+        heading=heading,
     )
     return {"id": str(thought_id), "project": _project}
 
@@ -81,14 +88,22 @@ def recall(
     scope: str | None = None,
     limit: int = 10,
     threshold: float = 0.0,
+    include_history: bool = False,
 ) -> dict[str, object]:
-    """Recall similar thoughts from memory."""
+    """Recall similar thoughts from memory.
+
+    include_history: when True, bypasses the valid_to IS NULL lifecycle filter and
+    returns superseded/expired rows alongside live rows for audit/history purposes.
+    Results are ordered by cosine similarity; RRF and MMR are not applied in history
+    mode.
+    """
     results = memory.recall(
         query,
         project=_project,
         scope=scope,
         limit=limit,
         threshold=threshold,
+        include_history=include_history,
     )
     return {
         "results": [
@@ -99,6 +114,8 @@ def recall(
                 "scope": r.scope,
                 "tags": r.tags,
                 "similarity": r.similarity,
+                "fused_score": r.fused_score,
+                "rerank_score": r.rerank_score,
                 "created_at": r.created_at.isoformat(),
             }
             for r in results
@@ -132,6 +149,10 @@ def show(thought_id: str) -> dict[str, object]:
         "metadata": thought.metadata,
         "created_at": thought.created_at.isoformat(),
         "updated_at": thought.updated_at.isoformat(),
+        # B1: lifecycle fields — None means live/active row.
+        "superseded_by": str(thought.superseded_by) if thought.superseded_by is not None else None,
+        "valid_from": thought.valid_from.isoformat() if thought.valid_from is not None else None,
+        "valid_to": thought.valid_to.isoformat() if thought.valid_to is not None else None,
     }
 
 

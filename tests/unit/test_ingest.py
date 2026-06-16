@@ -392,11 +392,18 @@ project = "proj"
     assert result.chunks_skipped == 1
     assert result.chunks_stored == 1
 
-    # embed_batch_fn called once, with only the NEW chunk's content — not the
-    # unchanged chunk.
+    # embed_batch_fn called once, with only the NEW chunk's embed text — not the
+    # unchanged chunk.  Since P3-1 (contextual embedding prefix), the embed
+    # receives build_embed_text(content, project=..., heading=...) rather than
+    # raw content.  We verify the embed text contains the raw content as a
+    # substring and that only one item was batched (the changed chunk).
     assert mock_embed.call_count == 1
     called_contents = mock_embed.call_args[0][0]
     assert len(called_contents) == 1, (
         f"Expected 1 content in batch (only the new chunk), got {len(called_contents)}"
     )
-    assert called_contents[0] == produced_chunks[1].content
+    assert produced_chunks[1].content in called_contents[0], (
+        f"Embed text should contain raw chunk content.\n"
+        f"  embed text:  {called_contents[0]!r}\n"
+        f"  raw content: {produced_chunks[1].content!r}"
+    )

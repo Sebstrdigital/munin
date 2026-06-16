@@ -12,6 +12,7 @@ from typing import Any
 from munin.core.chunker import Chunk, chunk_markdown
 from munin.core.config import MuninConfig, load
 from munin.core.db import get_pool
+from munin.core.embed import build_embed_text
 from munin.core.embed import embed_batch as embed_batch_fn
 from munin.core.manifest import load_sources as _load_sources
 
@@ -253,8 +254,22 @@ def ingest(
                     # embed_batch internally batches by cfg.embed_batch_size, so
                     # passing the full list here achieves true batching — one HTTP
                     # POST per embed_batch_size chunks, not one per chunk.
+                    #
+                    # P3-1: Build the contextual prefixed text for each chunk so
+                    # the vector carries project/scope/tags/heading context.
+                    # The RAW chunk.content is stored in the DB unchanged; only
+                    # the prefixed text is sent to the embed server.
                     try:
-                        contents = [p.chunk.content for p in pending]
+                        contents = [
+                            build_embed_text(
+                                p.chunk.content,
+                                project=p.project,
+                                scope=p.scope,
+                                tags=p.tags,
+                                heading=p.chunk.heading,
+                            )
+                            for p in pending
+                        ]
                         vectors = embed_batch_fn(contents, config=cfg)
                     except Exception as e:
                         logger.warning(
