@@ -266,6 +266,26 @@ Service path: /srv/munin
 Backup path: /srv/backups/munin or Proxmox backup plus logical pg_dump
 ```
 
+Provisioning preflight on 2026-06-16:
+
+```text
+VMID 130: free
+Debian cloud image: /var/lib/vz/template/qcow2/debian-13-genericcloud-amd64.qcow2
+Local Proxmox storage: 797 GB available
+MacBook SSH public key: ~/.ssh/id_ed25519.pub
+Current Munin data: 4,890 thoughts, 66 MB database, 228 MB pgdata
+Model transfer size: about 924 MB for active embed + rerank models
+```
+
+Remaining prep before VM creation:
+
+```text
+Choose/reserve IP for munin.local.
+Choose the Postgres password and decide where to store it.
+Confirm whether Caddy/reverse proxy is needed now or direct LAN ports are enough.
+Create a fresh pg_dump immediately before import.
+```
+
 Run the same three services there with persistent storage:
 
 ```text
