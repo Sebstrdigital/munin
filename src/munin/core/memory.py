@@ -449,7 +449,11 @@ def recall(
                     candidates,
                     embeddings,
                     lambda_=cfg.recall_mmr_lambda,
-                    k=match_limit,
+                    # When reranking is active the working set is the reranked
+                    # top-N (<= rerank_top_n), so bound k to what's available
+                    # rather than the caller's limit to honour the contract
+                    # explicitly instead of relying on the MMR loop running dry.
+                    k=min(match_limit, len(candidates)),
                 )
             else:
                 # MMR disabled or single candidate: return pure fused ranking.

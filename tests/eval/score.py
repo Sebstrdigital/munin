@@ -61,9 +61,10 @@ def _check_live_thoughts(
     """Return (live_ids, retired_ids).
 
     Queries the DB to verify which expected thought IDs are still live.
-    Uses only superseded_by IS NULL (present since migration 010) so this
-    works against both the prod DB (which may not yet have valid_to from
-    migration 011) and munin_test (which has all migrations applied).
+    A thought is live iff superseded_by IS NULL (migration 010) AND
+    valid_to IS NULL (migration 011) — matching the default-recall filter
+    so a bitemporally-retired expected thought is correctly treated as a
+    confounder rather than silently counted.
     """
     if not expected_ids:
         return set(), []
@@ -74,7 +75,8 @@ def _check_live_thoughts(
             cur.execute(
                 "SELECT id::text FROM thoughts"
                 " WHERE id = ANY(%s::uuid[])"
-                " AND superseded_by IS NULL",
+                " AND superseded_by IS NULL"
+                " AND valid_to IS NULL",
                 (expected_ids,),
             )
             live = {str(row[0]) for row in cur.fetchall()}
