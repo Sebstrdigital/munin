@@ -15,8 +15,25 @@
 -- This guarantees the per-row value is always within [min_ts, max_ts],
 -- so recency_signal stays in [0,1].
 --
--- Signature is identical to 007, so CREATE OR REPLACE is sufficient.
+-- Signature is identical to 007, so CREATE OR REPLACE would be sufficient —
+-- but we add an explicit DROP first for chain re-runnability (guardrail
+-- requirement: sql/009 already uses DROP-first; mirror the pattern here so
+-- 008 can be re-applied standalone without error).
 -- ---------------------------------------------------------------------------
+
+DROP FUNCTION IF EXISTS match_thoughts(
+    vector(768),
+    text,
+    text,
+    text,
+    int,
+    float,
+    int,
+    int,
+    float,
+    float,
+    float
+);
 
 CREATE OR REPLACE FUNCTION match_thoughts(
     query_embedding       vector(768),

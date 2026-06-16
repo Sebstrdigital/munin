@@ -21,6 +21,12 @@ services:
     image: ghcr.io/ggml-org/llama.cpp:server
     container_name: munin-llama-embed
     restart: unless-stopped
+    # M5: depends_on postgres so model load does not race a cold Postgres start.
+    # munin host process should wait for both llama-embed and llama-rerank to be
+    # healthy before first recall() call (check with: podman compose ps).
+    depends_on:
+      postgres:
+        condition: service_healthy
     command: >
       --model /models/embeddinggemma-300M-Q8_0.gguf
       --embedding
@@ -44,6 +50,13 @@ services:
     image: ghcr.io/ggml-org/llama.cpp:server
     container_name: munin-llama-rerank
     restart: unless-stopped
+    # M5: depends_on postgres (same rationale as llama-embed).  The reranker does
+    # not query Postgres directly but shares the same cold-start window; keeping
+    # all three services in sync avoids spurious "reranker unavailable" warnings
+    # on first recall() call after `podman compose up -d`.
+    depends_on:
+      postgres:
+        condition: service_healthy
     command: >
       --model /models/bge-reranker-v2-m3-Q8_0.gguf
       --reranking

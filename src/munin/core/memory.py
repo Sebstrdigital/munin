@@ -401,8 +401,17 @@ def recall(
                         c = rerank_candidates[orig_idx]
                         c.rerank_score = ranked_scores[rank_pos]
                         reranked.append(c)
-                    # Preserve any candidates beyond rerank_top_n in their original order.
-                    candidates = reranked + candidates[cfg.recall_rerank_top_n :]
+                    # F4 fix: discard the unreranked tail when reranking is active.
+                    # The tail has rerank_score=None so _relevance() falls back to
+                    # fused_score ([0,1]); mixing that with cross-encoder logits
+                    # (~[-12,+3]) in a single min/max normalization pushes every
+                    # fused_score tail item near 1.0, inverting the reranker.
+                    # Setting candidates = reranked keeps the working set within
+                    # one scale.  MMR k is bounded by min(match_limit, len(reranked))
+                    # so we can't produce fewer results than reranked (already
+                    # capped at recall_rerank_top_n which defaults to 25 > typical
+                    # limit of 10).
+                    candidates = reranked
                     logger.debug(
                         "recall: reranker reordered top-%d candidates",
                         len(ranked_indices),
@@ -472,6 +481,10 @@ class Thought:
     metadata: dict[str, Any]
     created_at: datetime
     updated_at: datetime
+    # B1: lifecycle fields added (P2-2 / P2-3); None = live/active row.
+    superseded_by: UUID | None = None
+    valid_from: datetime | None = None
+    valid_to: datetime | None = None
 
 
 def list_projects(
@@ -484,6 +497,7 @@ def list_projects(
         with conn.cursor() as cur:
             cur.execute(
                 "SELECT project, COUNT(*) FROM thoughts"
+                " WHERE superseded_by IS NULL AND valid_to IS NULL"
                 " GROUP BY project ORDER BY project"
             )
             rows: list[tuple[str, int]] = [
@@ -504,7 +518,8 @@ def show(
     with pool.connection() as conn:
         with conn.cursor() as cur:
             cur.execute(
-                "SELECT id, content, project, scope, tags, metadata, created_at, updated_at"
+                "SELECT id, content, project, scope, tags, metadata, created_at, updated_at,"
+                " superseded_by, valid_from, valid_to"
                 " FROM thoughts WHERE id = %s",
                 (uid,),
             )
@@ -520,6 +535,9 @@ def show(
         metadata=dict(row[5]),
         created_at=row[6],
         updated_at=row[7],
+        superseded_by=UUID(str(row[8])) if row[8] is not None else None,
+        valid_from=row[9],
+        valid_to=row[10],
     )
 
 
@@ -685,11 +703,14 @@ def remember(
 
             # P2-2: retire the superseded row atomically in the same transaction.
             # P2-3: stamp valid_to=now() so bitemporal queries exclude expired rows.
+            # F6: guard with AND superseded_by IS NULL so two concurrent remember()
+            # calls cannot double-retire the same row if both see it as the ANN
+            # neighbour before either completes the UPDATE.
             if _will_supersede and neighbour_id is not None and neighbour_id != new_id:
                 cur.execute(
                     "UPDATE thoughts"
                     " SET superseded_by = %s, valid_to = now()"
-                    " WHERE id = %s",
+                    " WHERE id = %s AND superseded_by IS NULL",
                     (new_id, neighbour_id),
                 )
                 logger.info(

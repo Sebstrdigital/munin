@@ -9,13 +9,10 @@ by catching MuninRerankUnavailable and falling back to the original order.
 
 from __future__ import annotations
 
+import atexit
 import logging
-from typing import TYPE_CHECKING
 
 import httpx
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 
@@ -28,8 +25,24 @@ logger = logging.getLogger(__name__)
 _client: httpx.Client | None = None
 _TIMEOUT = httpx.Timeout(connect=3.0, read=30.0, write=5.0, pool=5.0)
 
-# P2-fix (rate-limit warning): fire the degradation warning at most once per process.
-_warn_once_done: bool = False
+
+def _close_client() -> None:
+    """S2: atexit handler — close the module-level httpx.Client on process exit.
+
+    The long-lived MCP server process holds this client open for the duration of
+    its lifetime.  Without explicit close(), the underlying connection pool leaks
+    file descriptors.  Registered once at module import time.
+    """
+    global _client
+    if _client is not None:
+        try:
+            _client.close()
+        except Exception:
+            pass
+        _client = None
+
+
+atexit.register(_close_client)
 
 
 class MuninRerankUnavailable(Exception):

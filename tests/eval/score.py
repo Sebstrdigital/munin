@@ -6,6 +6,8 @@ and MRR over the full set.
 
 Usage:
     python tests/eval/score.py --out tests/eval/baseline_nomic.json
+    python tests/eval/score.py --out tests/eval/post_final_gemma.json \
+        --model embeddinggemma-300M-Q8_0
 
 Notes:
     - Calls the production recall() function directly — the same code path
@@ -19,6 +21,9 @@ Notes:
     - Scoping: eval pairs with scope=null call recall() without a scope
       filter, matching production agent behaviour.
     - k=10 is used for recall(); results contain up to 10 thoughts per query.
+    - Item 16: before scoring, each pair's expected_thought_id is checked to
+      be live (superseded_by IS NULL AND valid_to IS NULL).  Retired expected
+      thoughts are reported as confounders and excluded from metrics.
 """
 
 from __future__ import annotations
@@ -35,6 +40,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_REPO_ROOT / "src"))
 
 from munin.core.config import load as load_config  # noqa: E402
+from munin.core.db import get_pool as _get_pool  # noqa: E402
 from munin.core.memory import recall  # noqa: E402
 
 _EVAL_SET = Path(__file__).parent / "eval_set.json"
@@ -49,9 +55,50 @@ def _rank_of(results_ids: list[str], expected: str) -> int | None:
     return None
 
 
-def main(out_path: str | None) -> None:
+def _check_live_thoughts(
+    expected_ids: list[str], cfg: Any
+) -> tuple[set[str], list[str]]:
+    """Return (live_ids, retired_ids).
+
+    Queries the DB to verify which expected thought IDs are still live.
+    Uses only superseded_by IS NULL (present since migration 010) so this
+    works against both the prod DB (which may not yet have valid_to from
+    migration 011) and munin_test (which has all migrations applied).
+    """
+    if not expected_ids:
+        return set(), []
+    pool = _get_pool(cfg)
+    pool.open(wait=True)
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT id::text FROM thoughts"
+                " WHERE id = ANY(%s::uuid[])"
+                " AND superseded_by IS NULL",
+                (expected_ids,),
+            )
+            live = {str(row[0]) for row in cur.fetchall()}
+    retired = [eid for eid in expected_ids if eid not in live]
+    return live, retired
+
+
+def main(out_path: str | None, model_name: str | None) -> None:
     eval_pairs: list[dict[str, Any]] = json.loads(_EVAL_SET.read_text())
     cfg = load_config()
+
+    # Item 15: model label — use --model arg if provided, else embed_url as hint.
+    _model_label = model_name or f"unknown (embed_url={cfg.embed_url})"
+
+    # Item 16: verify expected thoughts are still live before scoring.
+    all_expected = [p["expected_thought_id"] for p in eval_pairs]
+    live_ids, retired_ids = _check_live_thoughts(all_expected, cfg)
+    if retired_ids:
+        sys.stderr.write(
+            f"[WARN] {len(retired_ids)} expected thought(s) are RETIRED (superseded/expired)"
+            " — these pairs are excluded from metrics as confounders:\n"
+        )
+        for rid in retired_ids:
+            sys.stderr.write(f"  {rid}\n")
 
     hits_at_1 = 0
     hits_at_5 = 0
@@ -59,6 +106,7 @@ def main(out_path: str | None) -> None:
     reciprocal_ranks: list[float] = []
 
     per_query: list[dict[str, Any]] = []
+    excluded = 0
 
     for pair in eval_pairs:
         pid = pair["id"]
@@ -66,6 +114,22 @@ def main(out_path: str | None) -> None:
         expected_id = pair["expected_thought_id"]
         project = pair["project"]
         scope = pair.get("scope")  # None means no scope filter
+
+        # Item 16: skip retired expected thoughts; they confound the gate.
+        if expected_id not in live_ids:
+            excluded += 1
+            per_query.append({
+                "pair_id": pid,
+                "project": project,
+                "expected_id": expected_id,
+                "rank": None,
+                "hit@1": 0,
+                "hit@5": 0,
+                "hit@10": 0,
+                "rr": 0.0,
+                "excluded": "expected_thought_retired",
+            })
+            continue
 
         try:
             results = recall(
@@ -104,15 +168,20 @@ def main(out_path: str | None) -> None:
             "rr": round(rr, 4),
         })
 
+    n_scored = len(eval_pairs) - excluded
     n = len(eval_pairs)
+    denom = n_scored if n_scored > 0 else 1
+
     summary: dict[str, Any] = {
-        "n": n,
-        "recall_at_1": round(hits_at_1 / n, 4),
-        "recall_at_5": round(hits_at_5 / n, 4),
-        "recall_at_10": round(hits_at_10 / n, 4),
-        "mrr": round(sum(reciprocal_ranks) / n, 4),
+        "n_total": n,
+        "n_scored": n_scored,
+        "n_excluded_retired": excluded,
+        "recall_at_1": round(hits_at_1 / denom, 4),
+        "recall_at_5": round(hits_at_5 / denom, 4),
+        "recall_at_10": round(hits_at_10 / denom, 4),
+        "mrr": round(sum(reciprocal_ranks) / denom, 4) if reciprocal_ranks else 0.0,
         "scored_at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
-        "model": "nomic-embed-text-v1.5",  # update after Phase 3 reindex
+        "model": _model_label,
         "per_query": per_query,
     }
 
@@ -128,5 +197,10 @@ def main(out_path: str | None) -> None:
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Score recall quality eval set")
     parser.add_argument("--out", default=None, help="Path to write JSON summary")
+    parser.add_argument(
+        "--model",
+        default=None,
+        help="Embedding model name to label in output JSON (e.g. embeddinggemma-300M-Q8_0)",
+    )
     args = parser.parse_args()
-    main(args.out)
+    main(args.out, args.model)
