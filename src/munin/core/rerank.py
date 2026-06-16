@@ -22,8 +22,11 @@ logger = logging.getLogger(__name__)
 # P2-fix(5): Module-level reusable client with structured timeout.
 # This avoids opening a new connection per recall() call.
 # The client is created lazily on first use.
+# P3-fix(C8): read timeout raised 10s → 30s.  bge-reranker-v2-m3-Q8_0 on CPU
+# scores 25 docs (after P3-fix top_n lowering) in ~8s; 30s gives comfortable
+# headroom while still failing fast on a truly hung sidecar.
 _client: httpx.Client | None = None
-_TIMEOUT = httpx.Timeout(connect=3.0, read=10.0, write=5.0, pool=5.0)
+_TIMEOUT = httpx.Timeout(connect=3.0, read=30.0, write=5.0, pool=5.0)
 
 # P2-fix (rate-limit warning): fire the degradation warning at most once per process.
 _warn_once_done: bool = False

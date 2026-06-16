@@ -383,7 +383,13 @@ def recall(
             if cfg.recall_rerank_enabled and len(candidates) > 1:
                 global _rerank_warn_once_done
                 rerank_candidates = candidates[: cfg.recall_rerank_top_n]
-                docs = [c.content for c in rerank_candidates]
+                # P3-fix(C6): cap each document to recall_rerank_doc_chars before
+                # sending to the cross-encoder.  bge-reranker-v2-m3 truncates
+                # internally beyond ~512 tokens; sending full content (avg 400–1200
+                # chars) wastes CPU and causes latency on CPU-only inference.
+                # Default cap = 512 chars ≈ 128 tokens — no quality loss.
+                _doc_cap = cfg.recall_rerank_doc_chars
+                docs = [c.content[:_doc_cap] for c in rerank_candidates]
                 try:
                     ranked_indices, ranked_scores = _rerank(
                         query, docs, rerank_url=cfg.rerank_url

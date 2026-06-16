@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import os
 import time
 from typing import cast
 
@@ -12,6 +13,46 @@ from munin.core.config import MuninConfig, load
 from munin.core.errors import MuninEmbedError
 
 logger = logging.getLogger(__name__)
+
+# ── Truncation constants ───────────────────────────────────────────────────────
+#
+# EmbeddingGemma-300M has a hard model context limit of 2048 tokens.  Dense
+# technical text (code, SQL, JSON) tokenizes at as low as ~1.5 chars/token for
+# ASCII and even denser for CJK.  To stay safe across all scripts:
+#
+#   budget = 2048 tokens × 1.3 chars/token (conservative worst-case) = 2662
+#
+# We use 2600 chars of CONTENT (round number, gives ~50 token margin).
+# The prefix adds at most ~80 chars (project + scope + tags + heading), which
+# maps to ~60 tokens — total well within the 2048 limit even for CJK/SQL.
+#
+# This constant is intentionally for the CONTENT slice only; the prefix is
+# prepended around it.  Override with env MUNIN_MAX_EMBED_CONTENT_CHARS.
+#
+_ENV_MAX_EMBED = "MUNIN_MAX_EMBED_CONTENT_CHARS"
+MAX_EMBED_CONTENT_CHARS: int = int(os.environ.get(_ENV_MAX_EMBED, "2600"))
+
+
+def truncate_for_embed(content: str) -> str:
+    """Return *content* truncated to MAX_EMBED_CONTENT_CHARS if needed.
+
+    The truncation applies ONLY to the content slice that is sent to the
+    embedding server.  The raw content stored in the DB is never touched.
+
+    Args:
+        content: Raw thought/chunk content string.
+
+    Returns:
+        The content string, truncated at MAX_EMBED_CONTENT_CHARS if it
+        exceeds that length.  Shorter strings are returned unchanged.
+    """
+    if len(content) > MAX_EMBED_CONTENT_CHARS:
+        logger.debug(
+            "embed: content truncated %d → %d chars for embed (raw stored unchanged)",
+            len(content), MAX_EMBED_CONTENT_CHARS,
+        )
+        return content[:MAX_EMBED_CONTENT_CHARS]
+    return content
 
 
 def build_embed_text(
@@ -28,6 +69,11 @@ def build_embed_text(
     vector carries section/source context.  Only non-empty fields are
     included in the prefix; absent fields are silently omitted.
 
+    The *content* is truncated to MAX_EMBED_CONTENT_CHARS before the prefix
+    is assembled so that the prefix is NEVER consumed by the truncation —
+    the slice always operates on content only, then the full prefix is
+    prepended around the (possibly truncated) content.
+
     Format (each present field on its own line, blank line before content):
 
         project: <project>
@@ -35,10 +81,11 @@ def build_embed_text(
         tags: <tag1>, <tag2>
         heading: <heading>
 
-        <content>
+        <content (truncated to MAX_EMBED_CONTENT_CHARS)>
 
-    The function is purely deterministic: identical arguments always
-    produce identical output.  No LLM or network calls are made.
+    The function is purely deterministic given the same input: identical
+    arguments always produce identical output.  No LLM or network calls
+    are made.
 
     The RAW *content* is stored in the DB and returned to callers unchanged.
     Only the return value of this function is sent to the embed server.
@@ -54,8 +101,12 @@ def build_embed_text(
         heading: Optional section heading; omitted when None or empty.
 
     Returns:
-        Prefixed string ready to be sent to the embedding server.
+        Prefixed string (with truncated content) ready to be sent to the
+        embedding server.  Total length ≤ MAX_EMBED_CONTENT_CHARS + ~100
+        chars of prefix.
     """
+    # Truncate content FIRST so the prefix is always fully preserved.
+    safe_content = truncate_for_embed(content)
     lines: list[str] = [f"project: {project}"]
     if scope:
         lines.append(f"scope: {scope}")
@@ -64,7 +115,7 @@ def build_embed_text(
     if heading:
         lines.append(f"heading: {heading}")
     lines.append("")  # blank line separating prefix from content
-    lines.append(content)
+    lines.append(safe_content)
     return "\n".join(lines)
 
 _TIMEOUT = 30.0

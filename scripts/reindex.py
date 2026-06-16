@@ -39,7 +39,7 @@ _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT / "src"))
 
 from munin.core.config import load as load_config  # noqa: E402
-from munin.core.embed import build_embed_text, embed_batch  # noqa: E402
+from munin.core.embed import MAX_EMBED_CONTENT_CHARS, build_embed_text, embed_batch  # noqa: E402
 
 logging.basicConfig(
     level=logging.INFO,
@@ -57,14 +57,10 @@ BATCH_SIZE = 32  # rows per embed batch
 MAINTENANCE_WORK_MEM = "64MB"  # container /dev/shm is limited; 64MB is safe
 MAX_PARALLEL_WORKERS = 4
 
-# EmbeddingGemma-300M is trained with max 2048 tokens and llama.cpp enforces
-# that hard limit (ctx-size=4096 is accepted by the flag but the model's native
-# n_ctx is 2048 and the server rejects inputs larger than that with HTTP 400).
-# Technical/code content tokenizes at ~2.1 chars/token (much denser than prose).
-# Safe budget: (2048 - 60 prefix_tokens) * 2.1 ≈ 3900 chars.  Texts longer than
-# this are truncated ONLY for the embed vector; the raw content in the DB is
-# unchanged, so retrieval still returns the full original text.
-MAX_EMBED_CHARS = 3900
+# Truncation is handled by embed.py::build_embed_text() via truncate_for_embed()
+# which uses MAX_EMBED_CONTENT_CHARS (default 2600).  The constant is imported
+# above and referenced in log messages so the reindex log records the effective
+# limit that was applied.
 
 
 def _pg_parts(db_url: str) -> dict[str, str]:
@@ -142,9 +138,20 @@ def main() -> None:
         db_url = f"{prefix}/{target_db}"
         log.info("Target DB overridden to: %s", target_db)
 
+    log.warning(
+        "D9 SAFETY: if this script crashes mid-run the table will contain a partial "
+        "mix of old and new embeddings (same 768-dim, different embedding space = "
+        "silently wrong recall).  The remedy is to re-run this script (it is "
+        "idempotent and will re-embed all rows) or restore from the backup taken "
+        "at the start of this run.  Do NOT run recall() between a crash and a "
+        "successful re-run or restore."
+    )
     log.info("=== munin reindex ===")
     log.info("Target DB: %s", target_db)
     log.info("Embed URL: %s", cfg.embed_url)
+    log.info(
+        "Content truncation limit: %d chars (MAX_EMBED_CONTENT_CHARS)", MAX_EMBED_CONTENT_CHARS
+    )
 
     # ── 0. Sanity: probe embed server ─────────────────────────────────────────
     log.info("Probing embed server …")
@@ -181,9 +188,12 @@ def main() -> None:
     log.info("Loaded %d rows", len(rows))
 
     # ── 4. Build prefixed embed texts ─────────────────────────────────────────
-    log.info("Building contextual prefix texts …")
+    # build_embed_text() now calls truncate_for_embed() internally so content
+    # is capped at MAX_EMBED_CONTENT_CHARS before the prefix is assembled.
+    # This is the SAME truncation logic used by remember() and ingest.py at
+    # write time, ensuring live writes and reindex produce identical embed inputs.
+    log.info("Building contextual prefix texts (content cap=%d chars) …", MAX_EMBED_CONTENT_CHARS)
     embed_texts: list[str] = []
-    truncated_count = 0
     for row in rows:
         tags = row["tags"] or []
         text = build_embed_text(
@@ -193,16 +203,7 @@ def main() -> None:
             tags=tags if tags else None,
             heading=row["heading"] or None,
         )
-        if len(text) > MAX_EMBED_CHARS:
-            log.warning(
-                "Truncating row %s: %d chars -> %d (exceeds Gemma 2048-token limit)",
-                row["id"], len(text), MAX_EMBED_CHARS,
-            )
-            text = text[:MAX_EMBED_CHARS]
-            truncated_count += 1
         embed_texts.append(text)
-    if truncated_count:
-        log.info("Truncated %d rows to %d chars", truncated_count, MAX_EMBED_CHARS)
 
     # ── 5. Embed in batches ───────────────────────────────────────────────────
     log.info("Embedding %d texts in batches of %d …", len(embed_texts), BATCH_SIZE)

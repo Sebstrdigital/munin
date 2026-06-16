@@ -53,17 +53,24 @@ _DEFAULTS: dict[str, str | int | float | bool] = {
     #   filter and returns superseded/expired rows alongside live rows, enabling point-in-time
     #   and history queries.  Default False (safe default — callers see only live thoughts).
     "recall_include_history": False,
-    # Cross-encoder reranker sidecar (P2-4).
-    # recall_rerank_enabled: when True, top-50 hybrid candidates are sent to the local
+    # Cross-encoder reranker sidecar (P2-4 / P3-fix).
+    # recall_rerank_enabled: when True, top-N hybrid candidates are sent to the local
     #   bge-reranker-v2-m3 sidecar as (query, doc) pairs and reordered by cross-encoder
     #   score before the MMR pass.  If the sidecar is unreachable the recall degrades
     #   gracefully to hybrid-only with a logged warning — it never crashes recall.
     #   Default True (safe — degrades automatically when sidecar is down).
     # rerank_url: base URL of the llama-rerank sidecar (default http://localhost:8089).
-    # recall_rerank_top_n: how many hybrid candidates to send to the reranker (default 50).
+    # recall_rerank_top_n: how many hybrid candidates to send to the reranker.
+    #   Lowered 50→25 (P3-fix): bge-reranker-v2-m3-Q8_0 on CPU scores 50 docs in ~16s
+    #   which exceeds the 10s read timeout.  25 docs scores in ~8s, safely under 30s.
+    # recall_rerank_doc_chars: max chars of each document sent to the reranker.
+    #   bge-reranker-v2-m3 truncates internally beyond ~512 tokens; sending full
+    #   content (avg 400–1200 chars) wastes CPU and causes latency.  512 chars ≈ 128
+    #   tokens, well within the model window and no quality loss (P3-fix C6).
     "recall_rerank_enabled": True,
     "rerank_url": "http://localhost:8089",
-    "recall_rerank_top_n": 50,
+    "recall_rerank_top_n": 25,
+    "recall_rerank_doc_chars": 512,
 }
 
 _ENV_MAP: dict[str, str] = {
@@ -86,10 +93,12 @@ _ENV_MAP: dict[str, str] = {
     "recall_rerank_enabled": "MUNIN_RECALL_RERANK_ENABLED",
     "rerank_url": "MUNIN_RERANK_URL",
     "recall_rerank_top_n": "MUNIN_RECALL_RERANK_TOP_N",
+    "recall_rerank_doc_chars": "MUNIN_RECALL_RERANK_DOC_CHARS",
 }
 
 _INT_FIELDS = {
-    "embed_dim", "default_limit", "embed_batch_size", "recall_rrf_k", "recall_rerank_top_n",
+    "embed_dim", "default_limit", "embed_batch_size", "recall_rrf_k",
+    "recall_rerank_top_n", "recall_rerank_doc_chars",
 }
 _FLOAT_FIELDS = {
     "recall_w_rrf", "recall_w_recency", "recall_w_hits",
@@ -124,10 +133,11 @@ class MuninConfig:
     remember_supersede_threshold: float = 0.80
     # Bi-temporal history mode (P2-3)
     recall_include_history: bool = False
-    # Cross-encoder reranker sidecar (P2-4)
+    # Cross-encoder reranker sidecar (P2-4 / P3-fix)
     recall_rerank_enabled: bool = True
     rerank_url: str = "http://localhost:8089"
-    recall_rerank_top_n: int = 50
+    recall_rerank_top_n: int = 25
+    recall_rerank_doc_chars: int = 512
 
 
 def load(config_path: Path | None = None) -> MuninConfig:
@@ -192,4 +202,5 @@ def load(config_path: Path | None = None) -> MuninConfig:
         recall_rerank_enabled=bool(resolved["recall_rerank_enabled"]),
         rerank_url=str(resolved["rerank_url"]),
         recall_rerank_top_n=int(resolved["recall_rerank_top_n"]),
+        recall_rerank_doc_chars=int(resolved["recall_rerank_doc_chars"]),
     )

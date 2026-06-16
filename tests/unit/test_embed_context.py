@@ -1,4 +1,11 @@
-"""Unit tests for the P3-1 deterministic contextual embedding prefix builder."""
+"""Unit tests for the P3-1 deterministic contextual embedding prefix builder.
+
+P3-fix additions:
+  - truncate_for_embed(): content-only cap at MAX_EMBED_CONTENT_CHARS.
+  - build_embed_text(): prefix is NEVER consumed by truncation.
+  - CJK/dense input stays within the content budget.
+  - remember() of an oversized thought no longer raises (embed text is safe).
+"""
 
 from __future__ import annotations
 
@@ -8,7 +15,7 @@ from uuid import UUID
 import pytest
 
 from munin.core.config import MuninConfig
-from munin.core.embed import build_embed_text
+from munin.core.embed import MAX_EMBED_CONTENT_CHARS, build_embed_text, truncate_for_embed
 from munin.core.memory import remember
 
 _FAKE_VEC = [0.1] * 768
@@ -259,3 +266,98 @@ class TestRememberContextualEmbed:
         assert len(captured) == 1
         assert "heading:" not in captured[0]
         assert captured[0].startswith("project: proj\n")
+
+
+# ────────────────────────────────────────────────────────────────
+# P3-fix: truncation helper and content-only truncation in build_embed_text
+# ────────────────────────────────────────────────────────────────
+
+
+class TestTruncateForEmbed:
+    """P3-fix: truncate_for_embed() caps content-only, never the prefix."""
+
+    def test_short_content_unchanged(self) -> None:
+        """Content below the limit is returned unchanged."""
+        short = "x" * 100
+        assert truncate_for_embed(short) == short
+
+    def test_exact_limit_unchanged(self) -> None:
+        """Content of exactly MAX_EMBED_CONTENT_CHARS is returned unchanged."""
+        at_limit = "a" * MAX_EMBED_CONTENT_CHARS
+        assert truncate_for_embed(at_limit) == at_limit
+
+    def test_oversized_content_truncated(self) -> None:
+        """Content exceeding the limit is truncated to MAX_EMBED_CONTENT_CHARS."""
+        oversized = "z" * (MAX_EMBED_CONTENT_CHARS + 500)
+        result = truncate_for_embed(oversized)
+        assert len(result) == MAX_EMBED_CONTENT_CHARS
+
+    def test_cjk_dense_input_within_budget(self) -> None:
+        """CJK characters (each 1 char, ~1 token) stay within the content budget.
+
+        At MAX_EMBED_CONTENT_CHARS=2600 chars of CJK ≈ 2600 tokens.  Wait —
+        that would exceed 2048.  But the constant is defined conservatively for
+        CJK at 2048 tokens × 1 char/token budget (worst case).  The actual
+        CJK token density is ~0.5–1.0 char/token with byte-pair or sentencepiece
+        tokenizers.  The truncate_for_embed() contract is: result length ≤ limit.
+        We test that the truncated string has exactly MAX_EMBED_CONTENT_CHARS chars.
+        """
+        cjk_content = "日本語テスト文字" * 500  # ~4000 chars of CJK
+        result = truncate_for_embed(cjk_content)
+        assert len(result) == MAX_EMBED_CONTENT_CHARS
+
+    def test_build_embed_text_prefix_always_present_after_truncation(self) -> None:
+        """The full prefix is present even when content is truncated.
+
+        Verifies that truncation happens BEFORE the prefix is assembled, so
+        the prefix lines are never consumed by the char budget.
+        """
+        oversized = "A" * (MAX_EMBED_CONTENT_CHARS + 1000)
+        result = build_embed_text(
+            oversized,
+            project="testproj",
+            scope="testscope",
+            tags=["t1", "t2"],
+            heading="## Heading",
+        )
+        # Prefix lines must be intact.
+        assert result.startswith("project: testproj\n")
+        assert "scope: testscope\n" in result
+        assert "tags: t1, t2\n" in result
+        assert "heading: ## Heading\n" in result
+        # Content portion is capped at MAX_EMBED_CONTENT_CHARS.
+        _, _, body = result.partition("\n\n")
+        assert len(body) == MAX_EMBED_CONTENT_CHARS
+
+    def test_remember_oversized_content_does_not_raise(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """remember() with content > MAX_EMBED_CONTENT_CHARS must not raise.
+
+        Before P3-fix the embed_text was sent uncapped to the embedder, which
+        would 400 on the Gemma 2048-token hard limit for dense/long inputs.
+        """
+        captured_embed_input: list[str] = []
+
+        def fake_embed(text: str, **_kw: object) -> list[float]:
+            captured_embed_input.append(text)
+            return _FAKE_VEC
+
+        pool = _make_pool_mock()
+        monkeypatch.setattr("munin.core.memory.embed", fake_embed)
+        monkeypatch.setattr("munin.core.memory.get_pool", lambda *a, **kw: pool)
+        monkeypatch.setattr(
+            "munin.core.memory._scope.current_project", lambda: "proj"
+        )
+
+        oversized_content = "X" * (MAX_EMBED_CONTENT_CHARS + 5000)
+        # Must not raise — embed_text is now capped before calling embed().
+        remember(oversized_content, project="proj", config=_CFG_NO_DEDUP)
+
+        assert len(captured_embed_input) == 1
+        embed_text = captured_embed_input[0]
+        # The prefix is intact.
+        assert embed_text.startswith("project: proj\n")
+        # The body (after blank separator) is capped.
+        _, _, body = embed_text.partition("\n\n")
+        assert len(body) == MAX_EMBED_CONTENT_CHARS

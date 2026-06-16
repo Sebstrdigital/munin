@@ -1,0 +1,211 @@
+{
+  "n": 20,
+  "recall_at_1": 0.55,
+  "recall_at_5": 0.6,
+  "recall_at_10": 0.7,
+  "mrr": 0.5868,
+  "scored_at": "2026-06-16T01:51:16Z",
+  "model": "nomic-embed-text-v1.5",
+  "per_query": [
+    {
+      "pair_id": 1,
+      "project": "dua-cs-agent",
+      "expected_id": "5d6d6590-e200-49d8-ab53-12f90964bb3d",
+      "rank": null,
+      "hit@1": 0,
+      "hit@5": 0,
+      "hit@10": 0,
+      "rr": 0.0
+    },
+    {
+      "pair_id": 2,
+      "project": "dua-cs-agent",
+      "expected_id": "bf6266f1-0201-4a8b-a3aa-a0a967386356",
+      "rank": null,
+      "hit@1": 0,
+      "hit@5": 0,
+      "hit@10": 0,
+      "rr": 0.0
+    },
+    {
+      "pair_id": 3,
+      "project": "nettobrand",
+      "expected_id": "cd09e7e5-d059-417f-afba-1c2d96a9d63d",
+      "rank": 1,
+      "hit@1": 1,
+      "hit@5": 1,
+      "hit@10": 1,
+      "rr": 1.0
+    },
+    {
+      "pair_id": 4,
+      "project": "nettobrand",
+      "expected_id": "0e3ac5e9-2f82-44cb-8629-a4a69cceb5e6",
+      "rank": null,
+      "hit@1": 0,
+      "hit@5": 0,
+      "hit@10": 0,
+      "rr": 0.0
+    },
+    {
+      "pair_id": 5,
+      "project": "kraken",
+      "expected_id": "c2ad5314-cbde-4400-8f95-14df7ae58fcb",
+      "rank": 8,
+      "hit@1": 0,
+      "hit@5": 0,
+      "hit@10": 1,
+      "rr": 0.125
+    },
+    {
+      "pair_id": 6,
+      "project": "kraken",
+      "expected_id": "163933cf-f2cc-44fa-bab1-f4fd7088333d",
+      "rank": null,
+      "hit@1": 0,
+      "hit@5": 0,
+      "hit@10": 0,
+      "rr": 0.0
+    },
+    {
+      "pair_id": 7,
+      "project": "munin",
+      "expected_id": "43963055-4926-4397-a67b-e3576476dbe3",
+      "rank": 1,
+      "hit@1": 1,
+      "hit@5": 1,
+      "hit@10": 1,
+      "rr": 1.0
+    },
+    {
+      "pair_id": 8,
+      "project": "munin",
+      "expected_id": "08efe85a-3a12-43ff-9724-a8262e348f47",
+      "rank": 1,
+      "hit@1": 1,
+      "hit@5": 1,
+      "hit@10": 1,
+      "rr": 1.0
+    },
+    {
+      "pair_id": 9,
+      "project": "takt",
+      "expected_id": "a6652620-f8d8-4494-bf87-d88d69dbca23",
+      "rank": 2,
+      "hit@1": 0,
+      "hit@5": 1,
+      "hit@10": 1,
+      "rr": 0.5
+    },
+    {
+      "pair_id": 10,
+      "project": "claude-tools",
+      "expected_id": "e33116c5-c005-47e1-9b7a-f09809931db4",
+      "rank": 1,
+      "hit@1": 1,
+      "hit@5": 1,
+      "hit@10": 1,
+      "rr": 1.0
+    },
+    {
+      "pair_id": 11,
+      "project": "oribium",
+      "expected_id": "be0ef405-0b3f-4ca5-bf00-72b1bb01d532",
+      "rank": 1,
+      "hit@1": 1,
+      "hit@5": 1,
+      "hit@10": 1,
+      "rr": 1.0
+    },
+    {
+      "pair_id": 12,
+      "project": "oribium",
+      "expected_id": "454d951b-5ebd-4d53-964e-26d0cae16c53",
+      "rank": 1,
+      "hit@1": 1,
+      "hit@5": 1,
+      "hit@10": 1,
+      "rr": 1.0
+    },
+    {
+      "pair_id": 13,
+      "project": "mcp-servers",
+      "expected_id": "c1caa824-7205-40ea-9c11-bab87e2957ee",
+      "rank": 9,
+      "hit@1": 0,
+      "hit@5": 0,
+      "hit@10": 1,
+      "rr": 0.1111
+    },
+    {
+      "pair_id": 14,
+      "project": "dua-erp",
+      "expected_id": "a4f973b7-9d3b-4f9d-a782-cc020ffecd4e",
+      "rank": null,
+      "hit@1": 0,
+      "hit@5": 0,
+      "hit@10": 0,
+      "rr": 0.0
+    },
+    {
+      "pair_id": 15,
+      "project": "dikta",
+      "expected_id": "b35be842-3311-4ad4-847e-fcf8a967454a",
+      "rank": 1,
+      "hit@1": 1,
+      "hit@5": 1,
+      "hit@10": 1,
+      "rr": 1.0
+    },
+    {
+      "pair_id": 16,
+      "project": "dikta",
+      "expected_id": "eea06994-6537-4cda-80fc-691801244155",
+      "rank": 1,
+      "hit@1": 1,
+      "hit@5": 1,
+      "hit@10": 1,
+      "rr": 1.0
+    },
+    {
+      "pair_id": 17,
+      "project": "dikta",
+      "expected_id": "5ee7584b-b639-48aa-9e55-6ea0c1d425c6",
+      "rank": 1,
+      "hit@1": 1,
+      "hit@5": 1,
+      "hit@10": 1,
+      "rr": 1.0
+    },
+    {
+      "pair_id": 18,
+      "project": "dua-erp",
+      "expected_id": "f99f03d1-68b1-46d4-9764-ad627c58604f",
+      "rank": null,
+      "hit@1": 0,
+      "hit@5": 0,
+      "hit@10": 0,
+      "rr": 0.0
+    },
+    {
+      "pair_id": 19,
+      "project": "claude-tools",
+      "expected_id": "545ca6cc-8330-4868-bdc0-53c5f939bfc8",
+      "rank": 1,
+      "hit@1": 1,
+      "hit@5": 1,
+      "hit@10": 1,
+      "rr": 1.0
+    },
+    {
+      "pair_id": 20,
+      "project": "claude-tools",
+      "expected_id": "39a8069c-3581-4000-b46c-2fb5650b6a01",
+      "rank": 1,
+      "hit@1": 1,
+      "hit@5": 1,
+      "hit@10": 1,
+      "rr": 1.0
+    }
+  ]
+}
