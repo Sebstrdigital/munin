@@ -53,6 +53,17 @@ _DEFAULTS: dict[str, str | int | float | bool] = {
     #   filter and returns superseded/expired rows alongside live rows, enabling point-in-time
     #   and history queries.  Default False (safe default — callers see only live thoughts).
     "recall_include_history": False,
+    # Cross-encoder reranker sidecar (P2-4).
+    # recall_rerank_enabled: when True, top-50 hybrid candidates are sent to the local
+    #   bge-reranker-v2-m3 sidecar as (query, doc) pairs and reordered by cross-encoder
+    #   score before the MMR pass.  If the sidecar is unreachable the recall degrades
+    #   gracefully to hybrid-only with a logged warning — it never crashes recall.
+    #   Default True (safe — degrades automatically when sidecar is down).
+    # rerank_url: base URL of the llama-rerank sidecar (default http://localhost:8089).
+    # recall_rerank_top_n: how many hybrid candidates to send to the reranker (default 50).
+    "recall_rerank_enabled": True,
+    "rerank_url": "http://localhost:8089",
+    "recall_rerank_top_n": 50,
 }
 
 _ENV_MAP: dict[str, str] = {
@@ -72,16 +83,21 @@ _ENV_MAP: dict[str, str] = {
     "remember_supersede_enabled": "MUNIN_REMEMBER_SUPERSEDE_ENABLED",
     "remember_supersede_threshold": "MUNIN_REMEMBER_SUPERSEDE_THRESHOLD",
     "recall_include_history": "MUNIN_RECALL_INCLUDE_HISTORY",
+    "recall_rerank_enabled": "MUNIN_RECALL_RERANK_ENABLED",
+    "rerank_url": "MUNIN_RERANK_URL",
+    "recall_rerank_top_n": "MUNIN_RECALL_RERANK_TOP_N",
 }
 
-_INT_FIELDS = {"embed_dim", "default_limit", "embed_batch_size", "recall_rrf_k"}
+_INT_FIELDS = {
+    "embed_dim", "default_limit", "embed_batch_size", "recall_rrf_k", "recall_rerank_top_n",
+}
 _FLOAT_FIELDS = {
     "recall_w_rrf", "recall_w_recency", "recall_w_hits",
     "recall_mmr_lambda", "remember_dedup_threshold", "remember_supersede_threshold",
 }
 _BOOL_FIELDS = {
     "recall_mmr_enabled", "remember_dedup_enabled", "remember_supersede_enabled",
-    "recall_include_history",
+    "recall_include_history", "recall_rerank_enabled",
 }
 
 
@@ -108,6 +124,10 @@ class MuninConfig:
     remember_supersede_threshold: float = 0.80
     # Bi-temporal history mode (P2-3)
     recall_include_history: bool = False
+    # Cross-encoder reranker sidecar (P2-4)
+    recall_rerank_enabled: bool = True
+    rerank_url: str = "http://localhost:8089"
+    recall_rerank_top_n: int = 50
 
 
 def load(config_path: Path | None = None) -> MuninConfig:
@@ -169,4 +189,7 @@ def load(config_path: Path | None = None) -> MuninConfig:
         remember_supersede_enabled=bool(resolved["remember_supersede_enabled"]),
         remember_supersede_threshold=float(resolved["remember_supersede_threshold"]),
         recall_include_history=bool(resolved["recall_include_history"]),
+        recall_rerank_enabled=bool(resolved["recall_rerank_enabled"]),
+        rerank_url=str(resolved["rerank_url"]),
+        recall_rerank_top_n=int(resolved["recall_rerank_top_n"]),
     )

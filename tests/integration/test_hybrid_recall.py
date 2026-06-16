@@ -89,6 +89,11 @@ def test_hit_count_recent_thought_ranks_above_stale(cfg: MuninConfig) -> None:
         recall_w_hits=cfg.recall_w_hits,
         recall_rrf_k=cfg.recall_rrf_k,
         recall_mmr_enabled=False,
+        # P2-4: disable reranker so this test verifies pure hybrid signal,
+        # same reason MMR is disabled — the cross-encoder would otherwise
+        # reorder the two near-duplicate indexing thoughts and mask the
+        # hit_count / recency ranking under test.
+        recall_rerank_enabled=False,
         remember_supersede_enabled=False,
     )
 

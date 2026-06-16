@@ -15,6 +15,12 @@ from munin.core.config import MuninConfig, load
 from munin.core.db import get_pool
 from munin.core.embed import embed
 from munin.core.errors import MuninError
+from munin.core.rerank import (
+    MuninRerankUnavailable,
+)
+from munin.core.rerank import (
+    rerank as _rerank,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -345,6 +351,30 @@ def recall(
                         created_at=row[7],
                     )
                 )
+
+            # P2-4: cross-encoder rerank stage — between RRF fusion and MMR.
+            # Takes top-N candidates (recall_rerank_top_n), scores (query, doc) pairs
+            # via the bge-reranker-v2-m3 sidecar, and reorders before MMR.
+            # Flag OFF → no-op (exact pre-rerank behaviour preserved).
+            # Sidecar unreachable → graceful degrade to hybrid order with a warning.
+            if cfg.recall_rerank_enabled and len(candidates) > 1:
+                rerank_candidates = candidates[: cfg.recall_rerank_top_n]
+                docs = [c.content for c in rerank_candidates]
+                try:
+                    ranked_indices = _rerank(
+                        query, docs, rerank_url=cfg.rerank_url
+                    )
+                    rerank_candidates = [rerank_candidates[i] for i in ranked_indices]
+                    # Preserve any candidates beyond rerank_top_n in their original order.
+                    candidates = rerank_candidates + candidates[cfg.recall_rerank_top_n :]
+                    logger.debug(
+                        "recall: reranker reordered top-%d candidates",
+                        len(ranked_indices),
+                    )
+                except MuninRerankUnavailable as exc:
+                    logger.warning(
+                        "recall: reranker unavailable, degrading to hybrid order: %s", exc
+                    )
 
             if mmr_enabled and len(candidates) > 1:
                 # Fetch raw embeddings for the candidate set so MMR can compute

@@ -39,3 +39,22 @@ services:
       interval: 10s
       timeout: 5s
       retries: 10
+
+  llama-rerank:
+    image: ghcr.io/ggml-org/llama.cpp:server
+    container_name: munin-llama-rerank
+    restart: unless-stopped
+    command: >
+      --model /models/bge-reranker-v2-m3-Q8_0.gguf
+      --reranking
+      --host 0.0.0.0
+      --port 8080
+    ports:
+      - "8089:8080"
+    volumes:
+      - ./models:/models:ro
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://localhost:8080/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
