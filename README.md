@@ -14,12 +14,15 @@ Munin is a local, language-agnostic memory system that lets you store and retrie
 cd munin
 ```
 
-### 2. Download the embedding model
+### 2. Download the models
+
+munin embeds with EmbeddingGemma-300M and re-ranks recall with a bge-reranker-v2-m3
+cross-encoder. Both are served locally by llama.cpp and must be present in `./models/`:
 
 ```bash
 mkdir -p models
-curl -L -o models/nomic-embed-text-v1.5.Q4_K_M.gguf \
-  https://huggingface.co/nomic-ai/nomic-embed-text-v1.5-GGUF/resolve/main/nomic-embed-text-v1.5.Q4_K_M.gguf
+hf download ggml-org/embeddinggemma-300M-GGUF embeddinggemma-300M-Q8_0.gguf --local-dir ./models
+hf download gpustack/bge-reranker-v2-m3-GGUF bge-reranker-v2-m3-Q8_0.gguf --local-dir ./models
 ```
 
 ### 3. Start the services
