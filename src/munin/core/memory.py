@@ -119,6 +119,79 @@ class ThoughtResult:
     created_at: datetime
 
 
+def _recall_history(
+    query: str,
+    *,
+    resolved_project: str,
+    scope: str | None,
+    match_limit: int,
+    threshold: float,
+    cfg: MuninConfig,
+) -> list[ThoughtResult]:
+    """History-mode recall: bypasses valid_to IS NULL so expired rows are included.
+
+    P2-3: This is an audit / point-in-time path.  RRF and MMR are not applied;
+    results are ranked by descending cosine similarity only.  Superseded and live
+    rows are returned together.
+
+    Does NOT bump hit_count — history lookups are read-only audit operations.
+    """
+    vec = embed(query, config=cfg)
+    vec_str = "[" + ",".join(f"{v:.8g}" for v in vec) + "]"
+
+    pool = get_pool(cfg)
+    pool.open(wait=True)
+
+    results: list[ThoughtResult] = []
+    with pool.connection() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SET LOCAL hnsw.ef_search = 100")
+            cur.execute("SET LOCAL hnsw.iterative_scan = 'relaxed_order'")
+            cur.execute(
+                "SELECT id, content, project, scope, tags, metadata,"
+                " (1 - (embedding <=> %s::vector))::float AS similarity,"
+                " created_at, updated_at,"
+                " (1 - (embedding <=> %s::vector))::double precision AS score"
+                " FROM thoughts"
+                " WHERE project = %s"
+                " AND (%s::text IS NULL OR scope = %s)"
+                " AND (1 - (embedding <=> %s::vector)) >= %s"
+                " ORDER BY embedding <=> %s::vector"
+                " LIMIT %s",
+                (
+                    vec_str,
+                    vec_str,
+                    resolved_project,
+                    scope,
+                    scope,
+                    vec_str,
+                    threshold,
+                    vec_str,
+                    match_limit,
+                ),
+            )
+            for row in cur.fetchall():
+                results.append(
+                    ThoughtResult(
+                        id=row[0],
+                        content=row[1],
+                        project=row[2],
+                        scope=row[3],
+                        tags=list(row[4]) if row[4] else [],
+                        metadata=dict(row[5]) if row[5] else {},
+                        similarity=float(row[6]),
+                        fused_score=float(row[9]),
+                        created_at=row[7],
+                    )
+                )
+
+    logger.debug(
+        "recall(history): project=%s returned %d rows (including expired)",
+        resolved_project, len(results),
+    )
+    return results
+
+
 def recall(
     query: str,
     *,
@@ -126,6 +199,7 @@ def recall(
     scope: str | None = None,
     limit: int | None = None,
     threshold: float = 0.0,
+    include_history: bool | None = None,
     config: MuninConfig | None = None,
 ) -> list[ThoughtResult]:
     """Return thoughts most similar to query, filtered by project and optional scope.
@@ -141,13 +215,19 @@ def recall(
     for MMR, the RPC is asked for match_limit * 5 rows; MMR then selects the final
     match_limit.  When MMR is disabled the pure fused ranking is returned unchanged.
 
+    When include_history is True (or config.recall_include_history is True), the
+    valid_to IS NULL filter is bypassed and superseded / expired rows are included
+    in results alongside live rows.  This is an audit / history path — RRF and
+    MMR are not applied; results are ordered by descending cosine similarity only.
+
     Config fields read (see MuninConfig):
-        recall_w_rrf        — weight for fused RRF relevance signal (default 0.7)
-        recall_w_recency    — weight for recency signal (default 0.2)
-        recall_w_hits       — weight for normalised hit_count (default 0.1)
-        recall_rrf_k        — RRF k constant (default 60)
-        recall_mmr_enabled  — enable MMR re-ranking (default True)
-        recall_mmr_lambda   — MMR relevance/diversity trade-off (default 0.7)
+        recall_w_rrf            — weight for fused RRF relevance signal (default 0.7)
+        recall_w_recency        — weight for recency signal (default 0.2)
+        recall_w_hits           — weight for normalised hit_count (default 0.1)
+        recall_rrf_k            — RRF k constant (default 60)
+        recall_mmr_enabled      — enable MMR re-ranking (default True)
+        recall_mmr_lambda       — MMR relevance/diversity trade-off (default 0.7)
+        recall_include_history  — include expired/superseded rows (default False)
 
     Args:
         query: Natural-language query to embed (dense leg) and search (lexical leg).
@@ -155,11 +235,15 @@ def recall(
         scope: Optional scope label to further restrict results.
         limit: Maximum number of results. Defaults to config.default_limit.
         threshold: Minimum cosine similarity for the dense leg (0.0–1.0).
+        include_history: Override for recall_include_history config flag.  When True,
+            bypasses valid_to IS NULL and returns all rows including expired ones.
+            Defaults to None (use config value).
         config: Optional config override; uses load() if not provided.
 
     Returns:
         List of ThoughtResult (length ≤ limit), ordered by MMR score when MMR is
-        enabled, or by descending hybrid score when MMR is disabled.
+        enabled, or by descending hybrid score when MMR is disabled.  In history
+        mode, ordered by descending cosine similarity.
 
     Raises:
         MuninError: If project cannot be determined.
@@ -173,6 +257,22 @@ def recall(
         )
 
     match_limit = limit if limit is not None else cfg.default_limit
+
+    # P2-3: history mode — bypass valid_to IS NULL so expired/superseded rows are
+    # included.  The param takes priority over the config flag when explicitly passed.
+    _include_history = (
+        include_history if include_history is not None else cfg.recall_include_history
+    )
+
+    if _include_history:
+        return _recall_history(
+            query,
+            resolved_project=resolved_project,
+            scope=scope,
+            match_limit=match_limit,
+            threshold=threshold,
+            cfg=cfg,
+        )
 
     # When MMR is enabled we need a larger candidate pool so the diversity pass
     # has meaningful choices.  We ask the RPC for match_limit * 5 candidates
@@ -483,11 +583,15 @@ def remember(
     new_id = UUID(str(row[0]))
 
     # P2-2: retire the superseded row now that the new thought exists.
+    # P2-3: also stamp valid_to=now() on the retired row so bitemporal queries
+    #        can use the validity window to exclude expired thoughts by default.
     if _will_supersede and neighbour_id is not None and neighbour_id != new_id:
         with pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
-                    "UPDATE thoughts SET superseded_by = %s WHERE id = %s",
+                    "UPDATE thoughts"
+                    " SET superseded_by = %s, valid_to = now()"
+                    " WHERE id = %s",
                     (new_id, neighbour_id),
                 )
         logger.info(

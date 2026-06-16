@@ -48,6 +48,11 @@ _DEFAULTS: dict[str, str | int | float | bool] = {
     #   new and no row is retired.
     "remember_supersede_enabled": True,
     "remember_supersede_threshold": 0.80,
+    # Bi-temporal history mode (P2-3).
+    # recall_include_history: when True, the recall() function bypasses the valid_to IS NULL
+    #   filter and returns superseded/expired rows alongside live rows, enabling point-in-time
+    #   and history queries.  Default False (safe default — callers see only live thoughts).
+    "recall_include_history": False,
 }
 
 _ENV_MAP: dict[str, str] = {
@@ -66,6 +71,7 @@ _ENV_MAP: dict[str, str] = {
     "remember_dedup_threshold": "MUNIN_REMEMBER_DEDUP_THRESHOLD",
     "remember_supersede_enabled": "MUNIN_REMEMBER_SUPERSEDE_ENABLED",
     "remember_supersede_threshold": "MUNIN_REMEMBER_SUPERSEDE_THRESHOLD",
+    "recall_include_history": "MUNIN_RECALL_INCLUDE_HISTORY",
 }
 
 _INT_FIELDS = {"embed_dim", "default_limit", "embed_batch_size", "recall_rrf_k"}
@@ -73,7 +79,10 @@ _FLOAT_FIELDS = {
     "recall_w_rrf", "recall_w_recency", "recall_w_hits",
     "recall_mmr_lambda", "remember_dedup_threshold", "remember_supersede_threshold",
 }
-_BOOL_FIELDS = {"recall_mmr_enabled", "remember_dedup_enabled", "remember_supersede_enabled"}
+_BOOL_FIELDS = {
+    "recall_mmr_enabled", "remember_dedup_enabled", "remember_supersede_enabled",
+    "recall_include_history",
+}
 
 
 @dataclass
@@ -97,6 +106,8 @@ class MuninConfig:
     # Supersession / conflict handling on write (P2-2)
     remember_supersede_enabled: bool = True
     remember_supersede_threshold: float = 0.80
+    # Bi-temporal history mode (P2-3)
+    recall_include_history: bool = False
 
 
 def load(config_path: Path | None = None) -> MuninConfig:
@@ -157,4 +168,5 @@ def load(config_path: Path | None = None) -> MuninConfig:
         remember_dedup_threshold=float(resolved["remember_dedup_threshold"]),
         remember_supersede_enabled=bool(resolved["remember_supersede_enabled"]),
         remember_supersede_threshold=float(resolved["remember_supersede_threshold"]),
+        recall_include_history=bool(resolved["recall_include_history"]),
     )
