@@ -13,6 +13,60 @@ from munin.core.errors import MuninEmbedError
 
 logger = logging.getLogger(__name__)
 
+
+def build_embed_text(
+    content: str,
+    *,
+    project: str,
+    scope: str | None = None,
+    tags: list[str] | None = None,
+    heading: str | None = None,
+) -> str:
+    """Build the contextual text that is sent to the embedder.
+
+    Prepends a deterministic metadata prefix to *content* so the resulting
+    vector carries section/source context.  Only non-empty fields are
+    included in the prefix; absent fields are silently omitted.
+
+    Format (each present field on its own line, blank line before content):
+
+        project: <project>
+        scope: <scope>
+        tags: <tag1>, <tag2>
+        heading: <heading>
+
+        <content>
+
+    The function is purely deterministic: identical arguments always
+    produce identical output.  No LLM or network calls are made.
+
+    The RAW *content* is stored in the DB and returned to callers unchanged.
+    Only the return value of this function is sent to the embed server.
+    There is no need for an ``embedded_text`` DB column because the prefixed
+    text can always be reconstructed from the stored columns (project, scope,
+    tags, metadata->>'heading', content) at P3-3 reindex time.
+
+    Args:
+        content: Raw thought/chunk content (what gets stored and displayed).
+        project: Project name — always included.
+        scope:   Optional scope label; omitted when None or empty.
+        tags:    Optional tag list; omitted when empty.
+        heading: Optional section heading; omitted when None or empty.
+
+    Returns:
+        Prefixed string ready to be sent to the embedding server.
+    """
+    lines: list[str] = [f"project: {project}"]
+    if scope:
+        lines.append(f"scope: {scope}")
+    if tags:
+        lines.append(f"tags: {', '.join(tags)}")
+    if heading:
+        lines.append(f"heading: {heading}")
+    lines.append("")  # blank line separating prefix from content
+    lines.append(content)
+    return "\n".join(lines)
+
 _TIMEOUT = 30.0
 _RETRY_WAITS = (0.5, 1.0)
 

@@ -13,7 +13,7 @@ from uuid import UUID
 from munin.core import scope as _scope
 from munin.core.config import MuninConfig, load
 from munin.core.db import get_pool
-from munin.core.embed import embed
+from munin.core.embed import build_embed_text, embed
 from munin.core.errors import MuninError
 from munin.core.rerank import (
     MuninRerankUnavailable,
@@ -524,16 +524,22 @@ def remember(
     scope: str | None = None,
     tags: list[str] | None = None,
     metadata: dict[str, Any] | None = None,
+    heading: str | None = None,
     config: MuninConfig | None = None,
 ) -> UUID:
     """Store a thought, auto-detecting the current git project if needed.
 
     Args:
-        content: The thought content to store.
+        content: The thought content to store (raw; returned unchanged by recall).
         project: Project name. Resolved from git root if not provided.
         scope: Optional scope label.
         tags: Optional list of string tags. Defaults to [].
         metadata: Optional JSON-serialisable metadata dict. Defaults to {}.
+        heading: Optional section heading embedded into the vector context prefix
+            (P3-1).  When provided it is also written into metadata['heading'] so
+            the prefix can be reconstructed at P3-3 reindex time from stored columns.
+            When absent, metadata.get('heading') is used as a fallback (for callers
+            that already store heading in metadata).
         config: Optional config override; uses load() if not provided.
 
     Returns:
@@ -553,8 +559,26 @@ def remember(
     resolved_tags: list[str] = tags if tags is not None else []
     resolved_metadata: dict[str, Any] = metadata if metadata is not None else {}
 
-    logger.info("remember: project=%s content_len=%d", resolved_project, len(content))
-    vec = embed(content, config=cfg)
+    # P3-1: heading param takes precedence; fall back to metadata['heading'] so
+    # callers that already store heading in metadata get context without changes.
+    resolved_heading: str | None = heading or resolved_metadata.get("heading")
+
+    # P3-1: build contextual prefixed text for the embedder.  The raw *content*
+    # is what gets stored in the DB and returned by recall/show — the prefix is
+    # ONLY sent to the embed server so the vector carries section/source context.
+    embed_text = build_embed_text(
+        content,
+        project=resolved_project,
+        scope=scope,
+        tags=resolved_tags,
+        heading=resolved_heading,
+    )
+
+    logger.info(
+        "remember: project=%s content_len=%d embed_text_len=%d",
+        resolved_project, len(content), len(embed_text),
+    )
+    vec = embed(embed_text, config=cfg)
     # DR-003: fixed-precision formatting avoids repr() emitting 'nan'/'inf'.
     embedding_str = "[" + ",".join(f"{v:.8g}" for v in vec) + "]"
 
