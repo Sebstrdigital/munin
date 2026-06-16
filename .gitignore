@@ -14,5 +14,7 @@ build/
 pgdata/
 *.dump
 .takt/
+.claude/
+.agentic-tools/
 backups/
 pytest-of-*/
