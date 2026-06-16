@@ -95,6 +95,12 @@ def test_hit_count_recent_thought_ranks_above_stale(cfg: MuninConfig) -> None:
         # hit_count / recency ranking under test.
         recall_rerank_enabled=False,
         remember_supersede_enabled=False,
+        # P3-2/P3-3: disable dedup so both near-duplicate "database indexing"
+        # thoughts are retained as distinct rows even after the Gemma model
+        # upgrade (Gemma embeds them at cosine >= 0.95, triggering the dedup
+        # gate and silently skipping the second insert — same fix rationale as
+        # the supersession and reranker disable above).
+        remember_dedup_enabled=False,
     )
 
     # Insert both thoughts (embeddings computed, rows created).
