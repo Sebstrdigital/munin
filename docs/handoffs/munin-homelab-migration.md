@@ -279,6 +279,51 @@ Current Munin data: 4,890 thoughts, 66 MB database, 228 MB pgdata
 Model transfer size: about 924 MB for active embed + rerank models
 ```
 
+Provisioned state on 2026-06-16:
+
+```text
+VMID: 130
+Name: munin
+Host: munin.local
+IP: 192.168.100.29
+OS: Debian 13 cloud image
+vCPU: 4
+RAM: 8 GB max, 4 GB balloon minimum
+Disk: 80 GB on Proxmox local storage
+SSH user: debian
+QEMU guest agent: active
+Avahi: active, provides munin.local
+Caddy: active
+podman-restart.service: enabled
+```
+
+Running homelab services:
+
+```text
+munin-postgres: healthy, 192.168.100.29:5433 -> 5432
+munin-llama-embed: healthy, 127.0.0.1:8088 -> 8080
+munin-llama-rerank: healthy, 127.0.0.1:8089 -> 8080
+```
+
+Imported data:
+
+```text
+thoughts after validation: 4,892
+database size after validation: 57 MB
+fresh dump stored at: /srv/backups/munin/munin-pre-homelab.dump
+models stored at: /srv/munin/models/
+compose file: /srv/munin/docker-compose.yml
+secret file: /etc/munin/munin.env
+```
+
+MacBook state after validation:
+
+```text
+~/.config/munin/config.toml points to munin.local.
+Local munin Podman containers are stopped.
+podman-machine-default is stopped.
+```
+
 Remaining prep before VM creation:
 
 ```text
@@ -336,8 +381,8 @@ Document the chosen host, IP/DNS name, data path, and backup path.
 Caddy exposure model:
 
 ```text
-https://munin.local/embed  -> localhost:8088
-https://munin.local/rerank -> localhost:8089
+http://munin.local/embed  -> localhost:8088
+http://munin.local/rerank -> localhost:8089
 ```
 
 Postgres is not an HTTP service and should not go through stock Caddy. Keep
@@ -345,20 +390,23 @@ Postgres on `5433` reachable only on the private LAN/VPN, or later replace
 direct DB access with a small Munin API if the direct database port becomes
 uncomfortable.
 
+Use HTTP for the first LAN-only version. Caddy `tls internal` works for `curl`
+after importing the local root into macOS Keychain, but Python/httpx does not
+use that keychain by default. HTTP keeps the CLI/MCP path simple while the
+service remains private to the LAN.
+
 Expected MacBook Munin config after validation:
 
 ```toml
 db_url = "postgresql://munin:<keychain-password>@munin.local:5433/munin"
-embed_url = "https://munin.local/embed"
-rerank_url = "https://munin.local/rerank"
+embed_url = "http://munin.local/embed"
+rerank_url = "http://munin.local/rerank"
 ```
 
 Initial Caddyfile shape:
 
 ```caddyfile
-munin.local {
-    tls internal
-
+http://munin.local {
     handle_path /embed/* {
         reverse_proxy 127.0.0.1:8088
     }
@@ -499,23 +547,23 @@ Create or update `~/.config/munin/config.toml` on the MacBook:
 
 ```toml
 db_url = "postgresql://munin:<keychain-password>@munin.local:5433/munin"
-embed_url = "https://munin.local/embed"
-rerank_url = "https://munin.local/rerank"
+embed_url = "http://munin.local/embed"
+rerank_url = "http://munin.local/rerank"
 ```
 
 Alternatively set environment variables:
 
 ```bash
 export MUNIN_DB_URL="postgresql://munin:<keychain-password>@munin.local:5433/munin"
-export MUNIN_EMBED_URL="https://munin.local/embed"
-export MUNIN_RERANK_URL="https://munin.local/rerank"
+export MUNIN_EMBED_URL="http://munin.local/embed"
+export MUNIN_RERANK_URL="http://munin.local/rerank"
 ```
 
 6. Validate from the MacBook.
 
 ```bash
-curl -fsS https://munin.local/embed/health
-curl -fsS https://munin.local/rerank/health
+curl -fsS http://munin.local/embed/health
+curl -fsS http://munin.local/rerank/health
 munin projects
 munin remember "home lab migration validation thought" --project munin --scope migration --tag validation
 munin recall "home lab migration validation" --project munin --limit 3
