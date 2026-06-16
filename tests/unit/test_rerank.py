@@ -8,6 +8,12 @@ Covers:
       recall does NOT raise.
   (c) With reranker on + stubbed sidecar, a document that ranked below top-1 by hybrid
       score is lifted to top-1 when the cross-encoder gives it a higher score.
+
+P2-fix additions:
+  (d) 200+empty results → MuninRerankUnavailable (not silent data-loss).
+  (e) 200+malformed JSON → MuninRerankUnavailable (not unhandled ValueError).
+  (f) 200+missing keys in result dict → MuninRerankUnavailable (not KeyError).
+  (g) WriteTimeout → MuninRerankUnavailable (not unhandled TimeoutException).
 """
 
 from __future__ import annotations
@@ -15,80 +21,136 @@ from __future__ import annotations
 import logging
 from unittest.mock import MagicMock, patch
 
+import httpx
 import pytest
 
 from munin.core.rerank import MuninRerankUnavailable, rerank
+
+
+def _make_mock_client(
+    response: MagicMock | None = None,
+    side_effect: Exception | None = None,
+) -> MagicMock:
+    """Build a mock httpx.Client whose post() returns response or raises side_effect."""
+    mock_client = MagicMock(spec=httpx.Client)
+    if side_effect is not None:
+        mock_client.post.side_effect = side_effect
+    elif response is not None:
+        mock_client.post.return_value = response
+    return mock_client
+
+
+def _ok_response(results: list[dict]) -> MagicMock:
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.return_value = {"results": results}
+    return resp
+
 
 # ---------------------------------------------------------------------------
 # Pure unit tests for the rerank() function itself
 # ---------------------------------------------------------------------------
 
 def test_rerank_returns_sorted_indices_by_score() -> None:
-    """rerank() returns document indices sorted by relevance_score descending."""
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = {
-        "results": [
-            {"index": 0, "relevance_score": 1.5},
-            {"index": 1, "relevance_score": 8.3},
-            {"index": 2, "relevance_score": -2.1},
-        ]
-    }
+    """rerank() returns (sorted_indices, scores) sorted by relevance_score desc."""
+    client = _make_mock_client(response=_ok_response([
+        {"index": 0, "relevance_score": 1.5},
+        {"index": 1, "relevance_score": 8.3},
+        {"index": 2, "relevance_score": -2.1},
+    ]))
 
-    with patch("httpx.Client") as mock_client_cls:
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.post.return_value = mock_response
-        mock_client_cls.return_value = mock_client
-
-        result = rerank(
-            "test query",
-            ["doc0", "doc1", "doc2"],
-            rerank_url="http://localhost:8089",
-        )
+    indices, scores = rerank(
+        "test query",
+        ["doc0", "doc1", "doc2"],
+        rerank_url="http://localhost:8089",
+        client=client,
+    )
 
     # index 1 (score 8.3) should be first, then index 0 (1.5), then index 2 (-2.1)
-    assert result == [1, 0, 2]
+    assert indices == [1, 0, 2]
+    assert scores[0] == pytest.approx(8.3)
+    assert scores[1] == pytest.approx(1.5)
+    assert scores[2] == pytest.approx(-2.1)
 
 
 def test_rerank_empty_documents_returns_empty() -> None:
     """rerank() with empty document list returns empty without HTTP call."""
-    with patch("httpx.Client") as mock_client_cls:
-        result = rerank("query", [], rerank_url="http://localhost:8089")
-        mock_client_cls.assert_not_called()
-    assert result == []
+    client = MagicMock(spec=httpx.Client)
+    indices, scores = rerank("query", [], rerank_url="http://localhost:8089", client=client)
+    client.post.assert_not_called()
+    assert indices == []
+    assert scores == []
 
 
 def test_rerank_raises_on_connect_error() -> None:
     """rerank() raises MuninRerankUnavailable on connection failure."""
-    import httpx
+    client = _make_mock_client(side_effect=httpx.ConnectError("refused"))
 
-    with patch("httpx.Client") as mock_client_cls:
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.post.side_effect = httpx.ConnectError("refused")
-        mock_client_cls.return_value = mock_client
-
-        with pytest.raises(MuninRerankUnavailable, match="unreachable"):
-            rerank("query", ["doc"], rerank_url="http://localhost:8089")
+    with pytest.raises(MuninRerankUnavailable, match="unreachable"):
+        rerank("query", ["doc"], rerank_url="http://localhost:8089", client=client)
 
 
 def test_rerank_raises_on_http_error() -> None:
     """rerank() raises MuninRerankUnavailable on non-200 HTTP status."""
-    mock_response = MagicMock()
-    mock_response.status_code = 503
+    resp = MagicMock()
+    resp.status_code = 503
+    client = _make_mock_client(response=resp)
 
-    with patch("httpx.Client") as mock_client_cls:
-        mock_client = MagicMock()
-        mock_client.__enter__ = MagicMock(return_value=mock_client)
-        mock_client.__exit__ = MagicMock(return_value=False)
-        mock_client.post.return_value = mock_response
-        mock_client_cls.return_value = mock_client
+    with pytest.raises(MuninRerankUnavailable, match="HTTP 503"):
+        rerank("query", ["doc"], rerank_url="http://localhost:8089", client=client)
 
-        with pytest.raises(MuninRerankUnavailable, match="HTTP 503"):
-            rerank("query", ["doc"], rerank_url="http://localhost:8089")
+
+# ---------------------------------------------------------------------------
+# P2-fix failure mode tests (item 8 from fix list)
+# ---------------------------------------------------------------------------
+
+def test_rerank_raises_on_empty_results() -> None:
+    """P2-fix(2a): 200+empty results list raises MuninRerankUnavailable.
+
+    Previously the empty list was silently accepted, causing the caller to
+    collapse the candidate list to its tail slice (data loss).
+    """
+    client = _make_mock_client(response=_ok_response([]))
+
+    with pytest.raises(MuninRerankUnavailable, match="empty results"):
+        rerank("query", ["doc A", "doc B"], rerank_url="http://localhost:8089", client=client)
+
+
+def test_rerank_raises_on_malformed_json() -> None:
+    """P2-fix(2b): 200+malformed JSON body raises MuninRerankUnavailable.
+
+    Previously ValueError from resp.json() escaped the fence and crashed
+    the MCP/CLI boundary.
+    """
+    resp = MagicMock()
+    resp.status_code = 200
+    resp.json.side_effect = ValueError("not valid JSON")
+    client = _make_mock_client(response=resp)
+
+    with pytest.raises(MuninRerankUnavailable, match="non-JSON"):
+        rerank("query", ["doc"], rerank_url="http://localhost:8089", client=client)
+
+
+def test_rerank_raises_on_missing_keys() -> None:
+    """P2-fix(2b): 200+result dicts missing 'index' or 'relevance_score' raises
+    MuninRerankUnavailable instead of propagating KeyError.
+    """
+    client = _make_mock_client(response=_ok_response([
+        {"idx": 0, "score": 1.0},  # wrong keys — missing index / relevance_score
+    ]))
+
+    with pytest.raises(MuninRerankUnavailable, match="malformed"):
+        rerank("query", ["doc"], rerank_url="http://localhost:8089", client=client)
+
+
+def test_rerank_raises_on_write_timeout() -> None:
+    """P2-fix(2c): WriteTimeout (and all TimeoutException subclasses) raises
+    MuninRerankUnavailable instead of propagating to the caller.
+    """
+    client = _make_mock_client(side_effect=httpx.WriteTimeout("timed out writing request"))
+
+    with pytest.raises(MuninRerankUnavailable, match="timed out"):
+        rerank("query", ["doc"], rerank_url="http://localhost:8089", client=client)
 
 
 # ---------------------------------------------------------------------------
@@ -102,6 +164,7 @@ class _FakeThought:
         self.content = content
         self.fused_score = score
         self.similarity = score
+        self.rerank_score: float | None = None
 
 
 def test_rerank_flag_off_no_op(caplog: pytest.LogCaptureFixture) -> None:

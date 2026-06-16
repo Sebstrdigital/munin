@@ -359,10 +359,10 @@ def _make_supersede_pool_mock(
 ) -> MagicMock:
     """Pool mock for the supersession happy path.
 
+    P2-fix(4): upsert + UPDATE now share one connection/transaction.
     Connection order:
       1. ANN SELECT → (neighbour_id, cosine)
-      2. upsert_thought → (new_id,)
-      3. UPDATE thoughts SET superseded_by — no fetchone needed
+      2. upsert_thought + UPDATE thoughts SET superseded_by (same cursor, 2 execute calls)
     """
     ann_cur = MagicMock()
     ann_cur.__enter__ = lambda s: s
@@ -373,6 +373,7 @@ def _make_supersede_pool_mock(
     ann_conn.__exit__ = MagicMock(return_value=False)
     ann_conn.cursor.return_value = ann_cur
 
+    # upsert + UPDATE share this cursor (fetchone returns new_id for the upsert SELECT).
     upsert_cur = MagicMock()
     upsert_cur.__enter__ = lambda s: s
     upsert_cur.__exit__ = MagicMock(return_value=False)
@@ -382,16 +383,8 @@ def _make_supersede_pool_mock(
     upsert_conn.__exit__ = MagicMock(return_value=False)
     upsert_conn.cursor.return_value = upsert_cur
 
-    update_cur = MagicMock()
-    update_cur.__enter__ = lambda s: s
-    update_cur.__exit__ = MagicMock(return_value=False)
-    update_conn = MagicMock()
-    update_conn.__enter__ = lambda s: s
-    update_conn.__exit__ = MagicMock(return_value=False)
-    update_conn.cursor.return_value = update_cur
-
     pool = MagicMock()
-    pool.connection.side_effect = [ann_conn, upsert_conn, update_conn]
+    pool.connection.side_effect = [ann_conn, upsert_conn]
     return pool
 
 
@@ -420,8 +413,8 @@ class TestRememberSupersession:
 
         # New id returned.
         assert result == _NEW_ID
-        # Three connections: ANN, upsert, UPDATE.
-        assert pool.connection.call_count == 3
+        # Two connections: ANN + (upsert+UPDATE in same transaction) — fix 4.
+        assert pool.connection.call_count == 2
         # Log records supersession.
         assert "superseded" in caplog.text
         assert str(_OLD_ID) in caplog.text
@@ -430,8 +423,13 @@ class TestRememberSupersession:
     def test_supersession_update_sql_correct(
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
-        """The UPDATE issued to retire the old row sets superseded_by = new_id."""
-        # Build the mock connections first so we can inspect update_conn after the call.
+        """The UPDATE issued to retire the old row sets superseded_by = new_id.
+
+        P2-fix(4): upsert + supersession UPDATE now share a single connection/
+        transaction, so there are only 2 pool.connection() calls (ANN + upsert/update).
+        The UPDATE is the second execute() call on the same cursor as the upsert.
+        """
+        # ANN connection.
         ann_cur = MagicMock()
         ann_cur.__enter__ = lambda s: s
         ann_cur.__exit__ = MagicMock(return_value=False)
@@ -441,6 +439,8 @@ class TestRememberSupersession:
         ann_conn.__exit__ = MagicMock(return_value=False)
         ann_conn.cursor.return_value = ann_cur
 
+        # Upsert+UPDATE share one connection/cursor (fix 4).
+        # fetchone() returns the new id for the upsert SELECT call.
         upsert_cur = MagicMock()
         upsert_cur.__enter__ = lambda s: s
         upsert_cur.__exit__ = MagicMock(return_value=False)
@@ -450,16 +450,8 @@ class TestRememberSupersession:
         upsert_conn.__exit__ = MagicMock(return_value=False)
         upsert_conn.cursor.return_value = upsert_cur
 
-        update_cur = MagicMock()
-        update_cur.__enter__ = lambda s: s
-        update_cur.__exit__ = MagicMock(return_value=False)
-        update_conn = MagicMock()
-        update_conn.__enter__ = lambda s: s
-        update_conn.__exit__ = MagicMock(return_value=False)
-        update_conn.cursor.return_value = update_cur
-
         pool = MagicMock()
-        pool.connection.side_effect = [ann_conn, upsert_conn, update_conn]
+        pool.connection.side_effect = [ann_conn, upsert_conn]
 
         monkeypatch.setattr("munin.core.memory.embed", lambda *a, **kw: _FAKE_VEC)
         monkeypatch.setattr("munin.core.memory.get_pool", lambda *a, **kw: pool)
@@ -473,10 +465,13 @@ class TestRememberSupersession:
             config=_CFG_SUPERSEDE_ON,
         )
 
-        # Third connection is the UPDATE; verify SQL and params.
-        assert pool.connection.call_count == 3
-        update_sql, update_params = update_cur.execute.call_args[0]
+        # 2 connections: ANN + (upsert + UPDATE in same transaction).
+        assert pool.connection.call_count == 2
+        # The UPDATE is the second execute() call on upsert_cur; check call_args_list.
+        assert upsert_cur.execute.call_count == 2
+        update_sql, update_params = upsert_cur.execute.call_args_list[1][0]
         assert "superseded_by" in update_sql
+        assert "valid_to" in update_sql
         assert _NEW_ID in update_params
         assert _OLD_ID in update_params
 
