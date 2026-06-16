@@ -22,14 +22,14 @@ services:
     container_name: munin-llama-embed
     restart: unless-stopped
     command: >
-      --model /models/nomic-embed-text-v1.5.Q4_K_M.gguf
+      --model /models/embeddinggemma-300M-Q8_0.gguf
       --embedding
       --pooling mean
       --host 0.0.0.0
       --port 8080
-      --ctx-size 2048
-      --batch-size 2048
-      --ubatch-size 2048
+      --ctx-size 4096
+      --batch-size 4096
+      --ubatch-size 4096
     ports:
       - "8088:8080"
     volumes:
