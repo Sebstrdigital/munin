@@ -264,6 +264,8 @@ SSH user: debian
 Runtime: Podman Compose, matching the local MacBook stack
 Service path: /srv/munin
 Backup path: /srv/backups/munin or Proxmox backup plus logical pg_dump
+Caddy config: /etc/caddy/Caddyfile
+Secret env: /etc/munin/munin.env
 ```
 
 Provisioning preflight on 2026-06-16:
@@ -281,10 +283,36 @@ Remaining prep before VM creation:
 
 ```text
 Choose/reserve IP for munin.local.
-Choose the Postgres password and decide where to store it.
-Confirm whether Caddy/reverse proxy is needed now or direct LAN ports are enough.
+Use the generated Postgres password stored in macOS Keychain.
+Put embed/rerank HTTP endpoints behind Caddy on munin.local.
 Create a fresh pg_dump immediately before import.
 ```
+
+Password state:
+
+```text
+Current local MacBook stack:
+  POSTGRES_PASSWORD is hardcoded as `munin` in docker-compose.yml.
+  Munin also defaults to postgresql://munin:munin@localhost:5433/munin.
+  No local secret manager is used for the current development stack.
+
+Homelab target:
+  A generated password is stored in macOS Keychain:
+    service: munin-homelab-postgres
+    account: munin
+
+  Retrieve when provisioning:
+    security find-generic-password -a munin -s munin-homelab-postgres -w
+
+  Store on the VM only in a root-readable env file:
+    /etc/munin/munin.env
+    owner: root:root
+    mode: 0600
+```
+
+Do not store the password in Git or inside the Munin database. The database
+uses the password to authenticate clients; it should not be the source of truth
+for that credential.
 
 Run the same three services there with persistent storage:
 
@@ -304,6 +332,47 @@ Prefer private LAN/VPN access.
 Replace default postgres password if the service is reachable beyond localhost.
 Document the chosen host, IP/DNS name, data path, and backup path.
 ```
+
+Caddy exposure model:
+
+```text
+https://munin.local/embed  -> localhost:8088
+https://munin.local/rerank -> localhost:8089
+```
+
+Postgres is not an HTTP service and should not go through stock Caddy. Keep
+Postgres on `5433` reachable only on the private LAN/VPN, or later replace
+direct DB access with a small Munin API if the direct database port becomes
+uncomfortable.
+
+Expected MacBook Munin config after validation:
+
+```toml
+db_url = "postgresql://munin:<keychain-password>@munin.local:5433/munin"
+embed_url = "https://munin.local/embed"
+rerank_url = "https://munin.local/rerank"
+```
+
+Initial Caddyfile shape:
+
+```caddyfile
+munin.local {
+    tls internal
+
+    handle_path /embed/* {
+        reverse_proxy 127.0.0.1:8088
+    }
+
+    handle_path /rerank/* {
+        reverse_proxy 127.0.0.1:8089
+    }
+
+    respond "munin" 200
+}
+```
+
+`handle_path` strips `/embed` and `/rerank`, so Munin's existing clients still
+call `/v1/embeddings` and `/reranking` on the upstream llama.cpp servers.
 
 ## Migration Steps
 
@@ -343,6 +412,15 @@ sudo mkdir -p /srv/munin/models /srv/munin/pgdata /srv/backups/munin
 sudo chown -R "$USER:$USER" /srv/munin /srv/backups/munin
 ```
 
+Create the server-side secret file:
+
+```bash
+sudo install -d -m 0700 /etc/munin
+sudo sh -c 'umask 077; cat > /etc/munin/munin.env' <<'EOF'
+MUNIN_POSTGRES_PASSWORD=<keychain-password>
+EOF
+```
+
 2. Copy or recreate the Munin compose file on the home lab.
 
 Use the Munin repo compose file as the starting point:
@@ -355,6 +433,25 @@ podman compose up -d
 For a service-only host, the repo does not need to live there permanently. A
 minimal `/srv/munin/docker-compose.yml` plus `/srv/munin/models` and
 `/srv/munin/pgdata` is enough.
+
+Use the homelab password from `/etc/munin/munin.env` rather than the local
+development default. In compose, set:
+
+```yaml
+environment:
+  POSTGRES_USER: munin
+  POSTGRES_PASSWORD: ${MUNIN_POSTGRES_PASSWORD}
+  POSTGRES_DB: munin
+```
+
+and run compose with:
+
+```bash
+set -a
+. /etc/munin/munin.env
+set +a
+podman compose up -d
+```
 
 3. Ensure model files exist on the home lab.
 
@@ -401,24 +498,24 @@ If using Docker on either side, replace `podman` with `docker`.
 Create or update `~/.config/munin/config.toml` on the MacBook:
 
 ```toml
-db_url = "postgresql://munin:<password>@munin.local:5433/munin"
-embed_url = "http://munin.local:8088"
-rerank_url = "http://munin.local:8089"
+db_url = "postgresql://munin:<keychain-password>@munin.local:5433/munin"
+embed_url = "https://munin.local/embed"
+rerank_url = "https://munin.local/rerank"
 ```
 
 Alternatively set environment variables:
 
 ```bash
-export MUNIN_DB_URL="postgresql://munin:<password>@munin.local:5433/munin"
-export MUNIN_EMBED_URL="http://munin.local:8088"
-export MUNIN_RERANK_URL="http://munin.local:8089"
+export MUNIN_DB_URL="postgresql://munin:<keychain-password>@munin.local:5433/munin"
+export MUNIN_EMBED_URL="https://munin.local/embed"
+export MUNIN_RERANK_URL="https://munin.local/rerank"
 ```
 
 6. Validate from the MacBook.
 
 ```bash
-curl -fsS http://munin.local:8088/health
-curl -fsS http://munin.local:8089/health
+curl -fsS https://munin.local/embed/health
+curl -fsS https://munin.local/rerank/health
 munin projects
 munin remember "home lab migration validation thought" --project munin --scope migration --tag validation
 munin recall "home lab migration validation" --project munin --limit 3
