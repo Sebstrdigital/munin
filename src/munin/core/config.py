@@ -38,6 +38,16 @@ _DEFAULTS: dict[str, str | int | float | bool] = {
     # remember_dedup_threshold: cosine similarity cutoff; >= this value => skip (default 0.95)
     "remember_dedup_enabled": True,
     "remember_dedup_threshold": 0.95,
+    # Supersession / conflict handling on write (P2-2).
+    # remember_supersede_enabled: when True, a new thought that is similar-but-not-a-dup
+    #   (similarity in [remember_supersede_threshold, remember_dedup_threshold)) retires the
+    #   older row by setting superseded_by = new.id.  The retired row stays in the DB but
+    #   is excluded from default recall (match_thoughts WHERE superseded_by IS NULL).
+    # remember_supersede_threshold: lower bound of the similarity window that triggers
+    #   supersession (default 0.80).  Below this the new thought is treated as genuinely
+    #   new and no row is retired.
+    "remember_supersede_enabled": True,
+    "remember_supersede_threshold": 0.80,
 }
 
 _ENV_MAP: dict[str, str] = {
@@ -54,14 +64,16 @@ _ENV_MAP: dict[str, str] = {
     "recall_mmr_lambda": "MUNIN_RECALL_MMR_LAMBDA",
     "remember_dedup_enabled": "MUNIN_REMEMBER_DEDUP_ENABLED",
     "remember_dedup_threshold": "MUNIN_REMEMBER_DEDUP_THRESHOLD",
+    "remember_supersede_enabled": "MUNIN_REMEMBER_SUPERSEDE_ENABLED",
+    "remember_supersede_threshold": "MUNIN_REMEMBER_SUPERSEDE_THRESHOLD",
 }
 
 _INT_FIELDS = {"embed_dim", "default_limit", "embed_batch_size", "recall_rrf_k"}
 _FLOAT_FIELDS = {
     "recall_w_rrf", "recall_w_recency", "recall_w_hits",
-    "recall_mmr_lambda", "remember_dedup_threshold",
+    "recall_mmr_lambda", "remember_dedup_threshold", "remember_supersede_threshold",
 }
-_BOOL_FIELDS = {"recall_mmr_enabled", "remember_dedup_enabled"}
+_BOOL_FIELDS = {"recall_mmr_enabled", "remember_dedup_enabled", "remember_supersede_enabled"}
 
 
 @dataclass
@@ -82,6 +94,9 @@ class MuninConfig:
     # Semantic near-duplicate detection on write (P2-1)
     remember_dedup_enabled: bool = True
     remember_dedup_threshold: float = 0.95
+    # Supersession / conflict handling on write (P2-2)
+    remember_supersede_enabled: bool = True
+    remember_supersede_threshold: float = 0.80
 
 
 def load(config_path: Path | None = None) -> MuninConfig:
@@ -140,4 +155,6 @@ def load(config_path: Path | None = None) -> MuninConfig:
         recall_mmr_lambda=float(resolved["recall_mmr_lambda"]),
         remember_dedup_enabled=bool(resolved["remember_dedup_enabled"]),
         remember_dedup_threshold=float(resolved["remember_dedup_threshold"]),
+        remember_supersede_enabled=bool(resolved["remember_supersede_enabled"]),
+        remember_supersede_threshold=float(resolved["remember_supersede_threshold"]),
     )

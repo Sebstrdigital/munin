@@ -397,10 +397,34 @@ def remember(
     pool = get_pool(cfg)
     pool.open(wait=True)
 
-    # P2-1: Semantic near-duplicate detection — ANN-check before insert.
-    # When enabled, query the top-1 in-project neighbour and skip if cosine
-    # similarity >= threshold.  Flag OFF restores prior insert-always behaviour.
-    if cfg.remember_dedup_enabled:
+    # P2-1 / P2-2: Similarity gate — ANN-check top-1 in-project neighbour.
+    #
+    # The two behaviours share a single ANN query and act on the result by
+    # similarity band:
+    #
+    #   cosine >= dedup_threshold  (default 0.95)
+    #       → NOOP / dedup skip: the new thought is virtually identical to the
+    #         existing one.  Return the existing id without inserting.
+    #         (P2-1 — requires remember_dedup_enabled)
+    #
+    #   supersede_threshold <= cosine < dedup_threshold  (default 0.80–0.95)
+    #       → Supersession: the new thought is a real update that conflicts with
+    #         the older one.  Insert the new thought first, then retire the old
+    #         row by setting superseded_by = new.id.  The retired row stays in
+    #         the DB but is excluded from default recall (match_thoughts WHERE
+    #         superseded_by IS NULL added in sql/010).
+    #         (P2-2 — requires remember_supersede_enabled)
+    #
+    #   cosine < supersede_threshold
+    #       → Genuinely new thought — insert without touching any existing row.
+    #
+    # When both flags are OFF, skip straight to insert (prior behaviour).
+    # When only dedup is ON: exact-ish duplicates are skipped; similar-but-new
+    # thoughts insert without superseding (safe degradation).
+    # When only supersede is ON: the dedup check is bypassed; similar thoughts
+    # still insert, and the old row is retired if in range.
+    _ann_neighbour: Any = None
+    if cfg.remember_dedup_enabled or cfg.remember_supersede_enabled:
         with pool.connection() as conn:
             with conn.cursor() as cur:
                 cur.execute(
@@ -411,18 +435,33 @@ def remember(
                     " LIMIT 1",
                     (embedding_str, resolved_project, embedding_str),
                 )
-                dup_row: Any = cur.fetchone()
+                _ann_neighbour = cur.fetchone()
 
-        if dup_row is not None:
-            dup_id = UUID(str(dup_row[0]))
-            cosine = float(dup_row[1])
-            if cosine >= cfg.remember_dedup_threshold:
-                logger.info(
-                    "remember: dedup skip — new thought is near-duplicate of %s"
-                    " (cosine=%.4f >= threshold=%.4f); project=%s",
-                    dup_id, cosine, cfg.remember_dedup_threshold, resolved_project,
-                )
-                return dup_id
+    if _ann_neighbour is not None:
+        neighbour_id = UUID(str(_ann_neighbour[0]))
+        cosine = float(_ann_neighbour[1])
+
+        # P2-1: exact-ish duplicate — skip insert entirely.
+        if cfg.remember_dedup_enabled and cosine >= cfg.remember_dedup_threshold:
+            logger.info(
+                "remember: dedup skip — new thought is near-duplicate of %s"
+                " (cosine=%.4f >= threshold=%.4f); project=%s",
+                neighbour_id, cosine, cfg.remember_dedup_threshold, resolved_project,
+            )
+            return neighbour_id
+
+        # P2-2: similar-but-different — insert new thought, then retire the old.
+        # Only fires when cosine falls in [supersede_threshold, dedup_threshold).
+        # The dedup check above already handled cosine >= dedup_threshold, so here
+        # cosine is guaranteed < dedup_threshold if dedup is enabled.
+        _will_supersede = (
+            cfg.remember_supersede_enabled
+            and cosine >= cfg.remember_supersede_threshold
+        )
+    else:
+        neighbour_id = None
+        cosine = 0.0
+        _will_supersede = False
 
     with pool.connection() as conn:
         with conn.cursor() as cur:
@@ -441,7 +480,25 @@ def remember(
 
     if row is None:
         raise MuninError("upsert_thought returned no row")
-    return UUID(str(row[0]))
+    new_id = UUID(str(row[0]))
+
+    # P2-2: retire the superseded row now that the new thought exists.
+    if _will_supersede and neighbour_id is not None and neighbour_id != new_id:
+        with pool.connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "UPDATE thoughts SET superseded_by = %s WHERE id = %s",
+                    (new_id, neighbour_id),
+                )
+        logger.info(
+            "remember: superseded %s with %s"
+            " (cosine=%.4f in [%.4f, %.4f)); project=%s",
+            neighbour_id, new_id,
+            cosine, cfg.remember_supersede_threshold, cfg.remember_dedup_threshold,
+            resolved_project,
+        )
+
+    return new_id
 
 
 def forget(
