@@ -15,7 +15,7 @@ def current_project(cwd: Path | None = None) -> str | None:
     return _find_project(root)
 
 
-@functools.lru_cache(maxsize=None)
+@functools.cache
 def _find_project(resolved_dir: Path) -> str | None:
     """Cached project lookup keyed on resolved absolute path."""
     for parent in [resolved_dir, *resolved_dir.parents]:
