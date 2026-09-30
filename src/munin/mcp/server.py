@@ -76,8 +76,10 @@ def remember(
 ) -> dict[str, str]:
     """Store a thought in munin memory.
 
-    project: optional project bucket to write to. Defaults to the project resolved from
-    the server's working directory; pass it when running outside the target repo.
+    project: optional project bucket to write to. Defaults to the project of the server's
+    cwd git root (else "unknown"). If you are working on another project, call
+    list_projects first, then pass project= explicitly.
+    Example: remember("Chose X over Y because Z", project="my-other-repo")
 
     heading: optional section heading passed to build_embed_text() (P3-1 contextual
     prefix) so the stored vector carries source/section context.  Also persisted into
@@ -107,8 +109,10 @@ def recall(
 ) -> dict[str, object]:
     """Recall similar thoughts from memory.
 
-    project: optional project bucket to search. Defaults to the project resolved from
-    the server's working directory; pass it when running outside the target repo.
+    project: optional project bucket to search. Defaults to the project of the server's
+    cwd git root (else "unknown"). If you are working on another project, call
+    list_projects first, then pass project= explicitly.
+    Example: recall("auth design decisions", project="my-other-repo")
 
     include_history: when True, bypasses the valid_to IS NULL lifecycle filter and
     returns superseded/expired rows alongside live rows for audit/history purposes.
@@ -147,7 +151,11 @@ def recall(
 @mcp.tool()
 @_handle_errors
 def list_projects() -> list[dict[str, object]]:
-    """List all projects with thought counts."""
+    """List projects with live thought counts.
+
+    Returns [{project, count}] ordered by project name; counts cover live thoughts only.
+    Call this before recall/remember to find the right project= value.
+    """
     results = memory.list_projects()
     return [{"project": p, "count": c} for p, c in results]
 
@@ -215,6 +223,7 @@ def stats() -> dict[str, object]:
     total_projects = len(memory.list_projects()) if db_reachable else 0
 
     return {
+        "default_project": _project,
         "total_thoughts": total_thoughts,
         "total_projects": total_projects,
         "embed_server_reachable": embed_reachable,

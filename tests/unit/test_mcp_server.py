@@ -352,3 +352,36 @@ class TestProjectOverride:
             assert r["error"]["code"] == "validation_error"
         mock_rec.assert_not_called()
         mock_rem.assert_not_called()
+
+
+class TestProjectAwareDocs:
+    def test_stats_includes_default_project(self) -> None:
+        with (
+            patch("munin.mcp.server._load_config", return_value=MagicMock()),
+            patch("munin.mcp.server._get_pool", side_effect=Exception("down")),
+            patch("munin.mcp.server._embed"),
+        ):
+            from munin.mcp.server import stats
+
+            result = stats()
+
+        assert result["default_project"] == _FAKE_PROJECT
+
+    def test_session_start_prompt_mentions_project_kwarg(self) -> None:
+        from munin.mcp.server import session_start_context
+
+        text = session_start_context()[0].text
+        assert "project=" in text
+        assert "list_projects" in text
+        assert _FAKE_PROJECT in text
+        assert "{project}" not in text
+
+    def test_tool_docstrings_describe_scoping(self) -> None:
+        from munin.mcp.server import list_projects, recall, remember
+
+        for fn in (recall, remember):
+            doc = fn.__doc__ or ""
+            assert "list_projects" in doc
+            assert "unknown" in doc
+            assert "Example:" in doc
+        assert "[{project, count}]" in (list_projects.__doc__ or "")
