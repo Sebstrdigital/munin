@@ -301,3 +301,87 @@ class TestStatsTool:
 
         assert result["embed_server_reachable"] is False
         assert result["db_reachable"] is True
+
+
+class TestProjectOverride:
+    def test_recall_forwards_project_and_echoes(self) -> None:
+        with patch("munin.mcp.server.memory.recall", return_value=[]) as mock_rec:
+            from munin.mcp.server import recall
+
+            result = recall(query="q", project="dua-factory")
+
+        assert mock_rec.call_args.kwargs["project"] == "dua-factory"
+        assert result["project"] == "dua-factory"
+
+    def test_remember_forwards_project_and_echoes(self) -> None:
+        with patch("munin.mcp.server.memory.remember", return_value=_FAKE_UUID) as mock_rem:
+            from munin.mcp.server import remember
+
+            result = remember(content="x", project="homelab")
+
+        assert mock_rem.call_args.kwargs["project"] == "homelab"
+        assert result == {"id": str(_FAKE_UUID), "project": "homelab"}
+
+    def test_omitted_project_uses_default(self) -> None:
+        with (
+            patch("munin.mcp.server.memory.recall", return_value=[]) as mock_rec,
+            patch("munin.mcp.server.memory.remember", return_value=_FAKE_UUID) as mock_rem,
+        ):
+            from munin.mcp.server import recall, remember
+
+            r1 = recall(query="q")
+            r2 = remember(content="x")
+
+        assert mock_rec.call_args.kwargs["project"] == _FAKE_PROJECT
+        assert mock_rem.call_args.kwargs["project"] == _FAKE_PROJECT
+        assert r1["project"] == _FAKE_PROJECT
+        assert r2["project"] == _FAKE_PROJECT
+
+    @pytest.mark.parametrize("bad", ["", "   "])
+    def test_blank_project_is_validation_error(self, bad: str) -> None:
+        with (
+            patch("munin.mcp.server.memory.recall") as mock_rec,
+            patch("munin.mcp.server.memory.remember") as mock_rem,
+        ):
+            from munin.mcp.server import recall, remember
+
+            r1 = recall(query="q", project=bad)
+            r2 = remember(content="x", project=bad)
+
+        for r in (r1, r2):
+            assert r["error"]["code"] == "validation_error"
+        mock_rec.assert_not_called()
+        mock_rem.assert_not_called()
+
+
+class TestProjectAwareDocs:
+    def test_stats_includes_default_project(self) -> None:
+        with (
+            patch("munin.mcp.server._load_config", return_value=MagicMock()),
+            patch("munin.mcp.server._get_pool", side_effect=Exception("down")),
+            patch("munin.mcp.server._embed"),
+        ):
+            from munin.mcp.server import stats
+
+            result = stats()
+
+        assert result["default_project"] == _FAKE_PROJECT
+
+    def test_session_start_prompt_mentions_project_kwarg(self) -> None:
+        from munin.mcp.server import session_start_context
+
+        text = session_start_context()[0].text
+        assert "project=" in text
+        assert "list_projects" in text
+        assert _FAKE_PROJECT in text
+        assert "{project}" not in text
+
+    def test_tool_docstrings_describe_scoping(self) -> None:
+        from munin.mcp.server import list_projects, recall, remember
+
+        for fn in (recall, remember):
+            doc = fn.__doc__ or ""
+            assert "list_projects" in doc
+            assert "unknown" in doc
+            assert "Example:" in doc
+        assert "[{project, count}]" in (list_projects.__doc__ or "")

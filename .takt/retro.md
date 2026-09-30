@@ -45,3 +45,39 @@
 - Total workbooks: 4 (US-003 had no workbook; completed in parallel pass)
 - Story durations: small avg 251s (US-001 267s, US-002 267s, US-004 131s, US-005 339s); medium avg 267s (US-003 267s)
 - Phase overhead: unavailable — retro start epoch not recorded
+
+---
+
+## Retro: 2026-09-30 — takt/mcp-project-param
+
+### What Went Well
+- All 3 stories passed on the first attempt (run-report attempts=1 each); verify and gate both PASSED in 1 cycle with no fix workers.
+- US-001 introduced a single `_resolve_project` helper (None -> startup project, blank -> validation error) that US-002 then documented; clean layering across stories.
+- US-003 confirmed the mcp 1.x pin with a fresh-venv install (mcp 1.30.0) plus 281 unit tests, ruff and mypy.
+
+### What Didn't Go Well
+- US-002 reported 30 pre-existing ruff errors outside touched files and left them; US-003 then reported "ruff all checks passed" after fixing one UP033 in `scope.py`. The two workbooks disagree on the repo-wide ruff state.
+- US-003 widened scope to `src/munin/core/scope.py` to satisfy the lint gate (mechanical `lru_cache` -> `cache`, no logic change).
+
+### Patterns Observed
+- `server.py` and `test_mcp_server.py` were touched by both US-001 and US-002 (overlap hotspot); ordering handled it without conflicts.
+- Pre-existing lint debt again leaked into story validation (previous retro also carried ruff/mypy env issues).
+
+### Tooling issues
+- `.takt/workbooks/` still held workbooks from the 2026-06-15 sprint (US-004/005/006, fix-*) that the previous cleanup did not remove; retro had to be told to ignore them.
+- `.takt/config.json` has `final_gate: true` while project CLAUDE.md says `final_gate: false`; the gate ran (1 cycle).
+- US-003 worker created a venv under `/tmp/munin-fresh` rather than the scratchpad.
+
+### Project follow-ups
+- Confirm repo-wide `ruff check .` status; US-002 saw 30 errors outside touched files, US-003 saw a clean run.
+- Address the 2 non-blocking suggestions raised by the review gate (suggestionCount=2) if still relevant.
+
+### Metrics
+- Stories: 3/3 passed, 0 blocked; retried on heavy: 0 (blocked after retry: 0)
+- Total workbooks: 3
+- Avg story duration: 49s (small), 24s (medium), n/a (large)
+- Verify: 1 cycles, 171s total
+- Gate: 1 cycles, 124s total
+- Fix workers: 0, 0s total
+- Merge/commit agents: 0, 0s total
+- Unattributed overhead: 0s (verify and gate ran in parallel; 256s from last story end to retro start, fully covered by 295s of stage time)
