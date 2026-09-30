@@ -55,6 +55,15 @@ def _handle_errors(func: F) -> F:
 _project: str = current_project() or "unknown"
 
 
+def _resolve_project(project: str | None) -> str:
+    """Return the explicit project override, or the startup-resolved default."""
+    if project is None:
+        return _project
+    if not project.strip():
+        raise MuninError("project must be a non-empty string")
+    return project
+
+
 @mcp.tool()
 @_handle_errors
 def remember(
@@ -63,22 +72,27 @@ def remember(
     tags: list[str] | None = None,
     metadata: dict[str, str] | None = None,
     heading: str | None = None,
+    project: str | None = None,
 ) -> dict[str, str]:
     """Store a thought in munin memory.
+
+    project: optional project bucket to write to. Defaults to the project resolved from
+    the server's working directory; pass it when running outside the target repo.
 
     heading: optional section heading passed to build_embed_text() (P3-1 contextual
     prefix) so the stored vector carries source/section context.  Also persisted into
     metadata['heading'] for future reindex.
     """
+    target = _resolve_project(project)
     thought_id = memory.remember(
         content,
-        project=_project,
+        project=target,
         scope=scope,
         tags=tags,
         metadata=metadata,
         heading=heading,
     )
-    return {"id": str(thought_id), "project": _project}
+    return {"id": str(thought_id), "project": target}
 
 
 @mcp.tool()
@@ -89,17 +103,22 @@ def recall(
     limit: int = 10,
     threshold: float = 0.0,
     include_history: bool = False,
+    project: str | None = None,
 ) -> dict[str, object]:
     """Recall similar thoughts from memory.
+
+    project: optional project bucket to search. Defaults to the project resolved from
+    the server's working directory; pass it when running outside the target repo.
 
     include_history: when True, bypasses the valid_to IS NULL lifecycle filter and
     returns superseded/expired rows alongside live rows for audit/history purposes.
     Results are ordered by cosine similarity; RRF and MMR are not applied in history
     mode.
     """
+    target = _resolve_project(project)
     results = memory.recall(
         query,
-        project=_project,
+        project=target,
         scope=scope,
         limit=limit,
         threshold=threshold,
@@ -120,7 +139,7 @@ def recall(
             }
             for r in results
         ],
-        "project": _project,
+        "project": target,
         "count": len(results),
     }
 
