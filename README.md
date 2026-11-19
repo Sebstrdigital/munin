@@ -119,6 +119,7 @@ The `core/` module is the single source of truth. The CLI and MCP server are thi
 
 ## Further reading
 
+- [Remote client setup](docs/remote-client-setup.md) — connect Linux/Omarchy clients to an existing deployment
 - [Design Decisions](docs/decisions.md) — rationale and architecture choices
 - [Release Plan](docs/plan.md) — milestones M0–M5
 - [Epic Documentation](tasks/epic-munin-v1.md) — user stories and acceptance criteria
